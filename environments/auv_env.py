@@ -293,7 +293,7 @@ def main():
         if done:
             obs = env.reset()
         env.render()
-        clock.tick(30)
+        clock.tick(60)
     pygame.quit()
     sys.exit()
 

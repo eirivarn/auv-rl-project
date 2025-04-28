@@ -17,7 +17,7 @@ def main():
             'period': 30.0,           # oscillation period (s)
             'direction': np.deg2rad(45)  # flow direction
         },
-        goal_params    = {'radius': 0.5},             # docking‐station size
+        goal_params    = {'radius': 0.25},             # docking‐station size
         beacon_params  = {
             'ping_interval':   1.0,   # seconds between beacon chirps
             'pulse_duration':  0.1,   # active listening window

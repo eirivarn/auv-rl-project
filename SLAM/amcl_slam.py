@@ -2,172 +2,213 @@ import numpy as np
 import pygame
 import sys
 import math
-import heapq
-from scipy.ndimage import binary_dilation
 from environments.test_env import AUVEnv
 
-# --- A* on a 2D grid ---
-def astar(grid, start, goal):
-    h = lambda a,b: abs(a[0]-b[0]) + abs(a[1]-b[1])
-    open_set = [(h(start,goal), 0, start, None)]
-    came_from = {}
-    cost_so_far = {start: 0}
-    while open_set:
-        f, g, current, parent = heapq.heappop(open_set)
-        if current in came_from:
+# SLAM & docking parameters
+LOG_ODDS_FREE = np.log(0.3/0.7)
+LOG_ODDS_OCC  = np.log(0.7/0.3)
+MIN_LOG_ODDS = -5.0
+MAX_LOG_ODDS = 5.0
+FOV = 2 * math.pi
+BEAMS = 60
+MAX_RANGE = 10.0
+RESOLUTION = 0.05
+ANGLE_TOL = 0.5  # radians
+FORWARD_SPEED = 0.2
+ROT_SPEED = 1.0
+
+# Alternate turn flag
+toggle_left = True
+
+
+def update_map(log_odds, pose, ranges, hit_mask, beam_angles, iter_num):
+    x, y, theta = pose
+    print(f"Iter {iter_num}: hits={hit_mask.sum()}, ranges min={ranges.min():.2f}, max={ranges.max():.2f}")
+    for i, r in enumerate(ranges):
+        if not hit_mask[i]:
             continue
-        came_from[current] = parent
-        if current == goal:
-            break
-        for di, dj in [(1,0),(-1,0),(0,1),(0,-1)]:
-            nb = (current[0]+di, current[1]+dj)
-            if not (0 <= nb[0] < grid.shape[0] and 0 <= nb[1] < grid.shape[1]):
-                continue
-            if grid[nb]:
-                continue
-            new_cost = g + 1
-            if new_cost < cost_so_far.get(nb, np.inf):
-                cost_so_far[nb] = new_cost
-                heapq.heappush(open_set, (new_cost + h(nb,goal), new_cost, nb, current))
-    if goal not in came_from:
-        return None
-    path = []
-    node = goal
-    while node:
-        path.append(node)
-        node = came_from[node]
-    return path[::-1]
+        ang = theta + beam_angles[i]
+        steps = int(min(r, MAX_RANGE) / RESOLUTION)
+        for s in range(steps):
+            d = (s + 1) * RESOLUTION
+            xi = x + d * math.cos(ang)
+            yi = y + d * math.sin(ang)
+            gi, gj = int(yi / RESOLUTION), int(xi / RESOLUTION)
+            if 0 <= gi < log_odds.shape[0] and 0 <= gj < log_odds.shape[1]:
+                log_odds[gi, gj] += LOG_ODDS_FREE
+        xi = x + r * math.cos(ang)
+        yi = y + r * math.sin(ang)
+        gi, gj = int(yi / RESOLUTION), int(xi / RESOLUTION)
+        if 0 <= gi < log_odds.shape[0] and 0 <= gj < log_odds.shape[1]:
+            log_odds[gi, gj] += LOG_ODDS_OCC
+    np.clip(log_odds, MIN_LOG_ODDS, MAX_LOG_ODDS, out=log_odds)
+    print(f"Map update: log-odds min={log_odds.min():.2f}, max={log_odds.max():.2f}")
+    return log_odds
 
-def to_grid(pose, res):
-    # Convert world (x,y) to grid indices (i,j).
-    x, y, _ = pose
-    return int(y/res), int(x/res)
 
-def to_world(cell, res):
-    # Convert grid (i,j) to world (x,y) at cell center.
-    return ((cell[1]+0.5)*res, (cell[0]+0.5)*res)
+def is_clear_path(env, start, goal):
+    dx = goal[0] - start[0]
+    dy = goal[1] - start[1]
+    dist = math.hypot(dx, dy)
+    steps = int(dist / RESOLUTION)
+    for i in range(1, steps+1):
+        t = i/steps
+        x = start[0] + t * dx
+        y = start[1] + t * dy
+        gi, gj = int(y/RESOLUTION), int(x/RESOLUTION)
+        if 0 <= gi < env.occ_grid.shape[0] and 0 <= gj < env.occ_grid.shape[1]:
+            if env.occ_grid[gi, gj]:
+                return False
+    return True
 
-# Planner parameters
-REPLAN_INTERVAL = 30
-DIRECT_SPEED = 0.2
-ROT_SPEED = 0.5
-ANGLE_TOL = 0.1
 
-if __name__=='__main__':
+def main():
+    global toggle_left
     pygame.init()
     screen = pygame.display.set_mode((1200, 600))
     clock = pygame.time.Clock()
 
     env = AUVEnv(
-        sonar_params={'compute_intensity': False},
+        sonar_params={
+            'fov': FOV, 'n_beams': BEAMS,
+            'max_range': MAX_RANGE, 'resolution': RESOLUTION,
+            'compute_intensity': True
+        },
+        beacon_params={
+            'ping_interval': 1.0,
+            'pulse_duration': 0.1,
+            'beacon_intensity': 1.0,
+            'ping_noise': 0.01
+        },
         current_params=None,
-        goal_params={'radius': 0.5},
-        beacon_params={'ping_interval':1.0, 'pulse_duration':0.1,
-                       'beacon_intensity':1.0,'ping_noise':0.01},
+        goal_params=None,
         window_size=(600,600)
     )
+
+    H, W = env.grid_size
+    log_odds = np.zeros((H, W), dtype=float)
+    beam_angles = env.sonar.beam_angles
+    state = 'go_to_goal'
+    hit_point = None
+    iter_num = 0
+
     obs = env.reset()
 
-    step_count = 0
-    current_path = None
-    path_idx = 0
-    occ_inf = np.zeros(env.grid_size, dtype=np.uint8)
-
-    running = True
-    while running:
+    while True:
+        # handle events
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
-                running = False
+                pygame.quit()
+                sys.exit()
 
-        # Obtain last observation
-        ranges, intensities, hits = obs
+        # SLAM map update
+        ranges, intensities, hit_mask = obs
+        log_odds = update_map(log_odds, env.pose, ranges, hit_mask, beam_angles, iter_num)
 
-        # Beacon detection
-        beacon_beams = [i for i,inten in enumerate(intensities or [])
-                        if hits[i] and inten >= env.beacon_intensity*0.9]
+        # compute goal metrics
+        dx = env.goal[0] - env.pose[0]
+        dy = env.goal[1] - env.pose[1]
+        dist_goal = math.hypot(dx, dy)
+        angle_to_goal = math.atan2(dy, dx)
+        rel_bearing = (angle_to_goal - env.pose[2] + math.pi) % (2*math.pi) - math.pi
+        front_idx = np.where(np.abs(env.sonar.beam_angles) < math.pi/12)[0]
+        min_front = np.min(ranges[front_idx]) if front_idx.size else MAX_RANGE
+        print(f"State={state}, dist={dist_goal:.2f}, rel_bearing={rel_bearing:.2f}, min_front={min_front:.2f}")
 
-        # Decide control
-        if beacon_beams:
-            # Direct ping steering
-            idx = beacon_beams[0]
-            beam_angle = env.sonar.beam_angles[idx]
-            if abs(beam_angle) > ANGLE_TOL:
+        # BUG2/go_to_goal + alternate wall turns
+        if dist_goal <= env.goal_radius:
+            v, omega = 0.0, 0.0
+            print("Reached docking station!")
+        elif state == 'go_to_goal':
+            if is_clear_path(env, env.pose[:2], env.goal):
+                # clear sight: go straight
+                v, omega = FORWARD_SPEED, 0.0
+                print("Clear path: moving to goal")
+            elif min_front < 1.0:
+                # hit obstacle: alternate turn direction
                 v = 0.0
-                omega = math.copysign(ROT_SPEED, beam_angle)
+                omega = ROT_SPEED if toggle_left else -ROT_SPEED
+                toggle_left = not toggle_left
+                state = 'wall_follow'
+                print(f"Hit obstacle: alternating turn, omega={omega:.2f}")
             else:
-                v = DIRECT_SPEED
+                # heading correction toward goal
+                v = FORWARD_SPEED
+                omega = math.copysign(ROT_SPEED/4, rel_bearing)
+        elif state == 'wall_follow':
+            if is_clear_path(env, env.pose[:2], env.goal):
+                # regain clear sight: resume go_to_goal
+                state = 'go_to_goal'
+                v, omega = FORWARD_SPEED, 0.0
+                print("Sight regained: switch to go_to_goal")
+            elif min_front < 1.0:
+                # continue wall follow: alternate turns
+                v = 0.0
+                omega = ROT_SPEED if toggle_left else -ROT_SPEED
+                toggle_left = not toggle_left
+                print(f"Wall follow: alternating turn, omega={omega:.2f}")
+            else:
+                # move forward along wall
+                v = FORWARD_SPEED
                 omega = 0.0
         else:
-            # Global A* planner on true map for robustness
-            if step_count % REPLAN_INTERVAL == 0 or current_path is None:
-                # Build occupancy & inflate
-                occ = env.occ_grid.copy()
-                occ_inf = binary_dilation(occ, structure=np.ones((3,3))).astype(np.uint8)
-                start = to_grid(env.pose, env.resolution)
-                goal_cell = (int(env.goal[1]/env.resolution),
-                             int(env.goal[0]/env.resolution))
-                current_path = astar(occ_inf, start, goal_cell)
-                path_idx = 0
+            v, omega = 0.0, 0.0
 
-            if current_path and len(current_path) > 1:
-                next_cell = current_path[min(path_idx+1, len(current_path)-1)]
-                wx, wy = to_world(next_cell, env.resolution)
-                dx = wx - env.pose[0]
-                dy = wy - env.pose[1]
-                desired = math.atan2(dy, dx)
-                db = (desired - env.pose[2] + math.pi) % (2*math.pi) - math.pi
-                if abs(db) > ANGLE_TOL:
-                    v = 0.0
-                    omega = math.copysign(ROT_SPEED, db)
-                else:
-                    v = DIRECT_SPEED
-                    omega = 0.0
-                    path_idx += 1
-            else:
-                # Fallback spin
-                v = 0.0
-                omega = ROT_SPEED
+        print(f"Control: v={v:.2f}, omega={omega:.2f}")
 
-        # Step true environment
+        # step environment
         obs, _, done, _ = env.step((v, omega))
         if done:
             obs = env.reset()
+            state = 'go_to_goal'
+            hit_point = None
+        iter_num += 1
 
-        # Draw left and right panels
-        screen.fill((0,0,0))
-        map_w = 600
-        H, W = env.grid_size
-        cw = map_w / W
-        ch = map_w / H
+        # --- Visualization (two panels) ---
+        screen.fill((0, 0, 0))
+        total_w, total_h = screen.get_size()
+        left_w = total_w // 2
+        right_w = total_w - left_w
+        # cell sizes
+        cwL = left_w / W
+        chL = total_h / H
+        cwR = right_w / W
+        chR = total_h / H
 
-        # Left: actual environment
-        for y, x in zip(*np.where(env.occ_grid)):
-            pygame.draw.rect(screen, (100,100,100), (x*cw, y*ch, cw, ch))
-        x_pix = env.pose[0]/env.resolution * cw
-        y_pix = env.pose[1]/env.resolution * ch
-        pygame.draw.circle(screen, (0,255,0), (int(x_pix), int(y_pix)), 5)
-        for r, rel_ang, hit in zip(ranges, env.sonar.beam_angles, hits):
-            ang = env.pose[2] + rel_ang
-            x2 = x_pix + (r/env.resolution)*cw * math.cos(ang)
-            y2 = y_pix + (r/env.resolution)*ch * math.sin(ang)
-            pygame.draw.line(screen, (0,200,200), (x_pix, y_pix), (x2, y2), 1)
+        # Left panel: true environment
+        for i, j in zip(*np.where(env.occ_grid)):
+            pygame.draw.rect(screen, (100,100,100), (j*cwL, i*chL, cwL, chL))
+        # robot pose
+        xpix = env.pose[0]/RESOLUTION * cwL
+        ypix = env.pose[1]/RESOLUTION * chL
+        pygame.draw.circle(screen, (0,255,0), (int(xpix), int(ypix)), 5)
+        # sonar beams
+        for r, rel, hit in zip(ranges, env.sonar.beam_angles, hit_mask):
+            ang = env.pose[2] + rel
+            x2 = xpix + (r/RESOLUTION)*cwL * math.cos(ang)
+            y2 = ypix + (r/RESOLUTION)*chL * math.sin(ang)
+            pygame.draw.line(screen, (0,200,200), (xpix, ypix), (x2, y2), 1)
             if hit:
                 pygame.draw.circle(screen, (255,0,0), (int(x2), int(y2)), 3)
 
-        # Right: planner path and inflated map
-        offset = map_w
-        for y, x in zip(*np.where(occ_inf)):
-            pygame.draw.rect(screen, (50,50,50), (offset + x*cw, y*ch, cw, ch))
-        if current_path:
-            for cell in current_path:
-                xw, yw = to_world(cell, env.resolution)
-                px = offset + xw/env.resolution * cw
-                py = yw/env.resolution * ch
-                pygame.draw.circle(screen, (0,0,255), (int(px), int(py)), 3)
-        gx = env.goal[0]/env.resolution * cw + offset
-        gy = env.goal[1]/env.resolution * ch
-        pygame.draw.circle(screen, (255,255,0), (int(gx), int(gy)), 6, 2)
+        # Right panel: SLAM occupancy map
+        offset = left_w
+        for gi in range(H):
+            for gj in range(W):
+                if log_odds[gi, gj] > 0:
+                    pygame.draw.rect(screen, (200,200,200),
+                                     (offset + gj*cwR, gi*chR, cwR, chR))
+        # docking station goal (cyan)
+        gx = offset + env.goal[0]/RESOLUTION * cwR
+        gy = env.goal[1]/RESOLUTION * chR
+        pygame.draw.circle(screen, (0,255,255), (int(gx), int(gy)), 8, 2)
+        # estimated pose (blue)
+        ex = offset + env.pose[0]/RESOLUTION * cwR
+        ey = env.pose[1]/RESOLUTION * chR
+        pygame.draw.circle(screen, (0,0,255), (int(ex), int(ey)), 5)
 
         pygame.display.flip()
         clock.tick(30)
-        step_count += 1
+
+if __name__ == '__main__':
+    main()

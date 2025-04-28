@@ -1,72 +1,61 @@
+import numpy as np
+import pygame
 import sys
 import math
-import random
-import pygame
-import numpy as np
-
-# --------------------------------------
-# Very Simple Particle Filter Demo
-# --------------------------------------
-# 600x600 window with 4 landmarks. Manual control of robot.
-# Particles estimate pose via noisy range measurements.
-
-WINDOW_SIZE = 600
-NUM_PARTICLES = 300
-LMARKS = [(100,100), (500,100), (100,500), (500,500)]  # pixel coords
-VELOCITY = 2.0  # pixels per frame
-OMEGA = 0.1     # radians per frame
-SIGMA_MOVE = 1.0
-SIGMA_TURN = 0.05
-SIGMA_RANGE = 10.0  # pixels noise in measurement
+from environments.test_env import AUVEnv  # adjust import path as needed
 
 class ParticleFilter:
-    def __init__(self, n):
-        self.n = n
-        # particles: x, y, theta
-        self.p = np.zeros((n,3))
-        self.p[:,0] = np.random.uniform(0, WINDOW_SIZE, n)
-        self.p[:,1] = np.random.uniform(0, WINDOW_SIZE, n)
-        self.p[:,2] = np.random.uniform(0, 2*math.pi, n)
-        self.w = np.ones(n)/n
+    """
+    Particle Filter using range-based AMCL update.
+    """
+    def __init__(self, env, n_particles=200, motion_noise=(0.01,0.005), sensor_noise=0.1):
+        self.env = env
+        self.n = n_particles
+        self.motion_noise = motion_noise
+        self.sensor_noise = sensor_noise
 
-    def predict(self, v, omega):
-        # add noise to each particle
-        v_noisy = np.random.normal(v, SIGMA_MOVE, self.n)
-        o_noisy = np.random.normal(omega, SIGMA_TURN, self.n)
-        th = self.p[:,2] + o_noisy
-        x = self.p[:,0] + v_noisy * np.cos(th)
-        y = self.p[:,1] + v_noisy * np.sin(th)
-        # keep inside window
-        x = np.clip(x, 0, WINDOW_SIZE)
-        y = np.clip(y, 0, WINDOW_SIZE)
-        th %= 2*math.pi
-        self.p = np.column_stack((x,y,th))
+        # initialize particles uniformly in free space (meters)
+        free = np.argwhere(env.occ_grid == 0)
+        coords = free * env.resolution  # (row,col)->(y,x)
+        idx = np.random.choice(len(coords), size=self.n)
+        pts = coords[idx]
+        thetas = np.random.uniform(-math.pi, math.pi, size=self.n)
+        self.p = np.column_stack((pts[:,1], pts[:,0], thetas))  # (x, y, theta)
+        self.w = np.ones(self.n) / self.n
 
-    def update(self, measurements):
-        # measurements: list of distances to landmarks
-        weights = np.ones(self.n)
-        for i, (lx,ly) in enumerate(LMARKS):
-            dx = self.p[:,0] - lx
-            dy = self.p[:,1] - ly
-            dists = np.hypot(dx, dy)
-            # compute Gaussian likelihood
-            weights *= np.exp(-0.5 * ((dists - measurements[i]) / SIGMA_RANGE)**2)
-        weights += 1e-300
-        self.w = weights / np.sum(weights)
+    def predict(self, v, omega, dt=0.1):
+        v_noisy = v + np.random.normal(0, self.motion_noise[0], self.n)
+        o_noisy = omega + np.random.normal(0, self.motion_noise[1], self.n)
+        th = (self.p[:,2] + o_noisy * dt) % (2*math.pi)
+        x = self.p[:,0] + v_noisy * dt * np.cos(th)
+        y = self.p[:,1] + v_noisy * dt * np.sin(th)
+        self.p = np.column_stack((x, y, th))
+
+    def update(self, obs_ranges, obs_mask):
+        sigma = self.sensor_noise
+        beams = np.where(obs_mask)[0]
+        if len(beams) == 0:
+            self.w.fill(1.0/self.n)
+            return
+        sel = beams[::max(1, len(beams)//15)]
+
+        log_w = np.zeros(self.n)
+        for i in range(self.n):
+            x, y, theta = self.p[i]
+            sim_ranges, _, _ = self.env.sonar.get_readings(
+                self.env.occ_grid, self.env.refl_grid, (x, y, theta)
+            )
+            diffs = obs_ranges[sel] - sim_ranges[sel]
+            log_w[i] = -0.5 * np.sum((diffs / sigma)**2)
+        log_w -= np.max(log_w)
+        w = np.exp(log_w)
+        self.w = w / np.sum(w)
 
     def resample(self):
-        # systematic resample
-        positions = (np.arange(self.n) + random.random())/self.n
-        indexes = np.zeros(self.n, 'i')
+        positions = (np.arange(self.n) + np.random.rand()) / self.n
         cdf = np.cumsum(self.w)
-        i, j = 0, 0
-        while i < self.n:
-            if positions[i] < cdf[j]:
-                indexes[i] = j
-                i += 1
-            else:
-                j += 1
-        self.p[:] = self.p[indexes]
+        idx = np.searchsorted(cdf, positions)
+        self.p = self.p[idx]
         self.w.fill(1.0/self.n)
 
     def estimate(self):
@@ -77,80 +66,101 @@ class ParticleFilter:
         theta = math.atan2(sin_t, cos_t)
         return x, y, theta
 
-class Robot:
-    def __init__(self):
-        self.x = WINDOW_SIZE/2
-        self.y = WINDOW_SIZE/2
-        self.theta = 0.0
-
-    def move(self, v, omega):
-        self.theta += omega
-        self.x += v * math.cos(self.theta)
-        self.y += v * math.sin(self.theta)
-        self.x = max(0, min(WINDOW_SIZE, self.x))
-        self.y = max(0, min(WINDOW_SIZE, self.y))
-
-    def sense(self):
-        # true ranges with noise
-        ranges = []
-        for lx,ly in LMARKS:
-            d = math.hypot(self.x-lx, self.y-ly)
-            ranges.append(d + np.random.normal(0, SIGMA_RANGE))
-        return ranges
-
-def draw_robot(screen, x, y, theta, color):
-    pygame.draw.circle(screen, color, (int(x), int(y)), 6)
-    # heading line
-    ex = x + 15*math.cos(theta)
-    ey = y + 15*math.sin(theta)
-    pygame.draw.line(screen, color, (int(x),int(y)), (int(ex),int(ey)), 2)
-
-def main():
+# ---------------------------------------------------
+# Main: simulation and PF on separate panels
+# ---------------------------------------------------
+if __name__=='__main__':
     pygame.init()
-    screen = pygame.display.set_mode((WINDOW_SIZE, WINDOW_SIZE))
+    # two 600x600 panels side by side
+    screen = pygame.display.set_mode((1200, 600))
     clock = pygame.time.Clock()
 
-    robot = Robot()
-    pf = ParticleFilter(NUM_PARTICLES)
-
+    env = AUVEnv(
+        sonar_params={'compute_intensity': False},
+        current_params=None,
+        goal_params=None,
+        beacon_params=None,
+        window_size=(600,600)
+    )
+    pf = ParticleFilter(env)
+    obs = env.reset()
     running = True
+
     while running:
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
                 running = False
 
         keys = pygame.key.get_pressed()
-        v = VELOCITY if keys[pygame.K_UP] else -VELOCITY if keys[pygame.K_DOWN] else 0.0
-        o = -OMEGA if keys[pygame.K_LEFT] else OMEGA if keys[pygame.K_RIGHT] else 0.0
+        v =  1.0 if keys[pygame.K_UP] else -1.0 if keys[pygame.K_DOWN] else 0.0
+        omega =  1.0 if keys[pygame.K_LEFT] else -1.0 if keys[pygame.K_RIGHT] else 0.0
 
-        # move robot
-        robot.move(v, o)
-        # predict
-        pf.predict(v, o)
-        # measurement
-        meas = robot.sense()
-        pf.update(meas)
+        # true step
+        obs, _, done, _ = env.step((v, omega))
+        if done:
+            obs = env.reset()
+            pf = ParticleFilter(env)
+        obs_ranges, _, hit_mask = obs
+
+        # PF update
+        pf.predict(v, omega)
+        pf.update(obs_ranges, hit_mask)
         pf.resample()
-        est_x, est_y, est_th = pf.estimate()
+        ex, ey, et = pf.estimate()
 
-        # draw
-        screen.fill((20,20,20))
-        # landmarks
-        for lx,ly in LMARKS:
-            pygame.draw.circle(screen, (0,0,255), (lx,ly), 8)
-        # particles
-        for px,py,pt in pf.p:
-            pygame.draw.circle(screen, (180,180,180), (int(px),int(py)), 2)
-        # robot true
-        draw_robot(screen, robot.x, robot.y, robot.theta, (0,255,0))
-        # robot estimate
-        draw_robot(screen, est_x, est_y, est_th, (255,255,0))
+        # clear screen
+        screen.fill((0,0,0))
+        map_w = 600
+        H, W = env.grid_size
+        cw = map_w / W
+        ch = map_w / H
+
+        # --- left panel: simulation world ---
+        # draw obstacles
+        for y, x in zip(*np.where(env.occ_grid)):
+            pygame.draw.rect(screen, (100,100,100), (x*cw, y*ch, cw, ch))
+        # draw robot and its beams
+        x_pix = env.pose[0]/env.resolution * cw
+        y_pix = env.pose[1]/env.resolution * ch
+        pygame.draw.circle(screen, (0,255,0), (int(x_pix),int(y_pix)), 5)
+        for r, rel_ang, hit in zip(obs_ranges, env.sonar.beam_angles, hit_mask):
+            ang = env.pose[2] + rel_ang
+            x2 = x_pix + (r/env.resolution)*cw * math.cos(ang)
+            y2 = y_pix + (r/env.resolution)*ch * math.sin(ang)
+            pygame.draw.line(screen, (0,200,200), (x_pix,y_pix), (x2,y2), 1)
+            if hit:
+                pygame.draw.circle(screen, (255,0,0), (int(x2),int(y2)), 3)
+
+        # --- right panel: PF map ---
+        offset = map_w
+        # draw map cells (same ordering as left)
+        for y, x in zip(*np.where(env.occ_grid)):
+            pygame.draw.rect(screen, (50,50,50), (offset + x*cw, y*ch, cw, ch))
+
+        # transform the exact observed ranges (obs_ranges, hit_mask) into world coords
+        angles = env.sonar.beam_angles + env.pose[2]
+        xs = obs_ranges * np.cos(angles)
+        ys = obs_ranges * np.sin(angles)
+        world_pts = np.stack((env.pose[0] + xs, env.pose[1] + ys), axis=1)
+
+        # draw sonar hits in world coords
+        for (wx, wy), m in zip(world_pts, hit_mask):
+            if not m: continue
+            px = offset + (wx/env.resolution) * cw
+            py = (wy/env.resolution) * ch
+            pygame.draw.circle(screen, (255,0,0), (int(px), int(py)), 4)
+        # draw particles
+        for x_p, y_p, _ in pf.p:
+            px = offset + (x_p/env.resolution) * cw
+            py = (y_p/env.resolution) * ch
+            pygame.draw.circle(screen, (0,0,255), (int(px), int(py)), 2)
+        # draw estimate
+        px = offset + (ex/env.resolution) * cw
+        py = (ey/env.resolution) * ch
+        pygame.draw.circle(screen, (255,255,0), (int(px), int(py)), 6, 2)
 
         pygame.display.flip()
         clock.tick(30)
 
     pygame.quit()
     sys.exit()
-
-if __name__ == '__main__':
-    main()

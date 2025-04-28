@@ -9,7 +9,7 @@ class SonarSensor:
     debris, and ghost echoes, ignoring beams that exit the map.
     """
     def __init__(self,
-                 fov=np.deg2rad(90), n_beams=60,
+                 fov=np.deg2rad(360), n_beams=60,
                  max_range=10.0, resolution=0.05,
                  noise_std=0.01,
                  compute_intensity=False,
@@ -228,10 +228,7 @@ class AUVEnv:
             x2 = x_pix + (r/self.resolution)*cw * math.cos(ang)
             y2 = y_pix + (r/self.resolution)*ch * math.sin(ang)
             pygame.draw.line(surf, (0,200,200), (x_pix, y_pix), (x2, y2), 1)
-            if hit_mask[i]:
-                pygame.draw.circle(surf, (255,0,0), (int(x2), int(y2)), 3)
-            if ping_idx == i:
-                pygame.draw.circle(surf, (255,0,0), (int(x2), int(y2)), 6, 2)
+
 
 
         # --- 2) Fan‐beam Sonar Panel on [map_w..map_w+panel_w] ---
@@ -300,6 +297,22 @@ class AUVEnv:
                 pygame.draw.circle(surf, (255,0,0), (int(px), int(py)), rad+3, 2)
         
         pygame.display.flip()
+
+    def get_cartesian_readings(self):
+        """
+        Returns sonar returns as (local_pts, world_pts, hit_mask):
+        - local_pts: N×2 array of (dx, dy) in the robot frame
+        - world_pts: N×2 array of absolute map-frame positions
+        - hit_mask: boolean mask of valid hits
+        """
+        ranges, intensities, hit_mask = self._get_obs()
+        angles = self.sonar.beam_angles + self.pose[2]
+        ys = ranges * np.cos(angles)
+        xs = ranges * np.sin(angles)
+        local_pts = np.stack((xs, ys), axis=1)
+        world_pts = local_pts + self.pose[:2]
+        return local_pts, world_pts, hit_mask
+
 
 
 if __name__=='__main__':

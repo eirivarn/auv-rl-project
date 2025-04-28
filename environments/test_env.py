@@ -187,101 +187,120 @@ class AUVEnv:
     def render(self):
         surf = pygame.display.set_mode(self.window_size)
         surf.fill((0, 0, 50))
+
+        # --- parameters for panels ---
         map_w = 600
-        H, W = self.grid_size
-        cw = map_w / W
-        ch = 600 / H
+        total_w, total_h = self.window_size
+        panel_w = (total_w - map_w) // 2    # 200 if width is 1000
+        map_h = total_h
 
+        # --- 1) Draw the map on [0..map_w] ---
+        cw = map_w / self.grid_size[1]
+        ch = map_h / self.grid_size[0]
         for y, x in zip(*np.where(self.occ_grid)):
-            pygame.draw.rect(surf, (100, 100, 100), (x*cw, y*ch, cw, ch))
-        gx_pix = self.goal[0]/self.resolution * cw
-        gy_pix = self.goal[1]/self.resolution * ch
+            pygame.draw.rect(surf, (100,100,100),
+                            (x*cw, y*ch, cw, ch))
+        # goal & robot on map
+        gx = self.goal[0]/self.resolution * cw
+        gy = self.goal[1]/self.resolution * ch
         pygame.draw.circle(surf, self.goal_color,
-                           (int(gx_pix), int(gy_pix)),
-                           int(self.goal_radius/self.resolution * cw), 2)
-        x_pix = self.pose[0]/self.resolution * cw
-        y_pix = self.pose[1]/self.resolution * ch
-        pygame.draw.circle(surf, (0,255,0), (int(x_pix), int(y_pix)), 5)
+                        (int(gx),int(gy)),
+                        int(self.goal_radius/self.resolution*cw),2)
+        x_pix = self.pose[0]/self.resolution*cw
+        y_pix = self.pose[1]/self.resolution*ch
+        pygame.draw.circle(surf,(0,255,0),(int(x_pix),int(y_pix)),5)
+        ex = x_pix + 20*math.cos(self.pose[2])
+        ey = y_pix + 20*math.sin(self.pose[2])
+        pygame.draw.line(surf,(0,255,0),(int(x_pix),int(y_pix)),(int(ex),int(ey)),2)
 
-        # get obs including beacon
+        # get your ranges/intensities/mask
         ranges, intensities, hit_mask = self._get_obs()
-        # draw beams
-        for r, rel_ang, hit in zip(ranges, self.sonar.beam_angles, hit_mask):
-            if not hit: continue
+
+        ping_idx = None
+        if self.beacon_enabled and (self.time % self.ping_interval) < self.pulse_duration:
+            dx, dy = self.goal - self.pose[:2]
+            bearing = math.atan2(dy, dx) - self.pose[2]
+            bearing = (bearing + math.pi) % (2*math.pi) - math.pi
+            ping_idx = np.argmin(np.abs(self.sonar.beam_angles - bearing))
+
+        for i, (r, rel_ang) in enumerate(zip(ranges, self.sonar.beam_angles)):
             ang = self.pose[2] + rel_ang
             x2 = x_pix + (r/self.resolution)*cw * math.cos(ang)
             y2 = y_pix + (r/self.resolution)*ch * math.sin(ang)
-            pygame.draw.line(surf, (0,200,200), (x_pix,y_pix), (x2,y2), 1)
+            pygame.draw.line(surf, (0,200,200), (x_pix, y_pix), (x2, y2), 1)
+            if hit_mask[i]:
+                pygame.draw.circle(surf, (255,0,0), (int(x2), int(y2)), 3)
+            if ping_idx == i:
+                pygame.draw.circle(surf, (255,0,0), (int(x2), int(y2)), 6, 2)
 
-        # sonar panel
+
+        # --- 2) Fan‐beam Sonar Panel on [map_w..map_w+panel_w] ---
         sx0 = map_w
-        sw = self.window_size[0] - map_w
-        pygame.draw.rect(surf, (20,20,80), (sx0,0,sw,600))
+        sw = panel_w
+        pygame.draw.rect(surf, (20,20,80), (sx0, 0, sw, total_h))
         bs = sw / self.sonar.n_beams
-        for i, (r, inten, hit) in enumerate(zip(ranges, intensities if intensities is not None else [None]*len(ranges), hit_mask)):
+        # true hits
+        for i, (r, inten, hit) in enumerate(zip(ranges,
+                                            intensities if intensities is not None else [None]*len(ranges),
+                                            hit_mask)):
             if not hit: continue
             px = sx0 + i*bs + bs/2
-            py = 600 - (r/self.sonar.max_range)*580
+            py = total_h - (r/self.sonar.max_range)*(total_h-20)
+            if inten is not None:
+                norm = min(max(inten,0),1)
+                col = (int(norm*255), 0, int((1-norm)*255))
+            else:
+                col = (0,200,200)
+            pygame.draw.circle(surf, col, (int(px),int(py)), 6)
+            
+        # debris & ghost echoes
+        for i, (r, inten, hit) in enumerate(zip(ranges, intensities if intensities is not None else [None]*len(ranges), hit_mask)):
+            if not hit:
+                continue
+            # existing dot
+            px = sx0 + i*bs + bs/2
+            py = total_h - (r/self.sonar.max_range)*(total_h - 20)
             if inten is not None:
                 norm = min(max(inten, 0.0), 1.0)
                 color = (int(norm*255), 0, int((1-norm)*255))
             else:
                 color = (0,200,200)
-            pygame.draw.circle(surf, color, (int(px), int(py)), 6)  # larger marker
+            pygame.draw.circle(surf, color, (int(px), int(py)), 6)
 
-        for i, r, inten in self.sonar.get_spurious(ranges, intensities, hit_mask):
-            if r >= self.sonar.max_range: continue
-            px = sx0 + i*bs + bs/2
-            py = 600 - (r/self.sonar.max_range)*580
-            norm = min(max(inten or 0, 0.0), 1.0)
-            col = (150,150,150) if norm < 0.05 else (int(norm*255), 255-int(norm*255), 0)
-            pygame.draw.circle(surf, col, (int(px), int(py)), 2)
+            # new: bold ping highlight
+            if ping_idx == i:
+                pygame.draw.circle(surf, (255,0,0), (int(px), int(py)), 10, 3)
 
-        # Highlight beacon ping
-        if self.beacon_enabled and (self.time % self.ping_interval) < self.pulse_duration:
-            dx, dy = self.goal - self.pose[:2]
-            dist = math.hypot(dx, dy)
-            bearing = math.atan2(dy, dx) - self.pose[2]
-            bearing = (bearing + math.pi) % (2*math.pi) - math.pi
-            idx = np.argmin(np.abs(self.sonar.beam_angles - bearing))
-            if dist < self.sonar.max_range:
-                px = sx0 + idx*bs + bs/2
-                py = 600 - (dist/self.sonar.max_range)*580
-                pygame.draw.circle(surf, (255,0,0), (int(px), int(py)), 10, 2)  # bold red ring
 
-         # ---- Cartesian Sonar Display ----
-        # width of side‐panel
-        sw = self.window_size[0] - map_w
-        # origin and size of cartesian box
-        cx0 = map_w + 10
-        cy0 = 10
-        size = sw - 20
-        # background
-        pygame.draw.rect(surf, (30, 30, 30), (cx0, cy0, size, size))
+        # 3) Cartesian Sonar Display to the right
+        cx0 = map_w + panel_w
+        cy0 = 0
+        cw2 = panel_w
+        ch2 = total_h
+        pygame.draw.rect(surf, (30,30,30), (cx0, cy0, cw2, ch2))
+        center_x = cx0 + cw2//2
+        center_y = cy0 + ch2//2
+        scale = cw2 / self.sonar.max_range
 
-        # centre of sonar display
-        center_x = cx0 + size//2
-        center_y = cy0 + size//2
-        scale = size / self.sonar.max_range
-
-        # plot each beam in local cartesian coords
         for i, (r, rel_ang) in enumerate(zip(ranges, self.sonar.beam_angles)):
-            # local x,y before rotation
             dy = r * math.cos(rel_ang)
             dx = r * math.sin(rel_ang)
-            # map into pixel coords
+            # flip X so ahead is upward, left is left
             px = center_x + dx * scale
             py = center_y - dy * scale
-            # hit vs miss colour
+
             if hit_mask[i]:
-                col = (255, 255, 0)
-                radius = 3
+                col, rad = (255,255,0), 3
             else:
-                col = (50, 50, 50)
-                radius = 2
-            pygame.draw.circle(surf, col, (int(px), int(py)), radius)
-            
+                col, rad = (50,50,50), 2
+            pygame.draw.circle(surf, col, (int(px), int(py)), rad)
+
+            # highlight docking ping
+            if ping_idx == i:
+                pygame.draw.circle(surf, (255,0,0), (int(px), int(py)), rad+3, 2)
+        
         pygame.display.flip()
+
 
 if __name__=='__main__':
     pygame.init()

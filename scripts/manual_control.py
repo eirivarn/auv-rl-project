@@ -18,6 +18,7 @@ def main():
             'beacon_intensity': 1.0,  # override intensity
             'ping_noise':      0.01   # noise on the beacon range
         }
+        , window_size=(1000, 600)  # Set the window size
     )
 
     obs = env.reset()

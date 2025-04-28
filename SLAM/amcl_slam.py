@@ -5,10 +5,10 @@ import math
 from environments.test_env import AUVEnv  
 
 # Particle filter parameters
-NUM_PARTICLES = 500
+NUM_PARTICLES = 50
 MOTION_NOISE = {'v': 0.1, 'omega': 0.05}
 SENSOR_NOISE = 0.1
-BEAMS = 16  # number of beams for subsampling
+BEAMS = 10  # number of beams for subsampling
 
 # Initialize particles uniformly over free map cells
 def init_particles(env):

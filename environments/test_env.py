@@ -249,6 +249,38 @@ class AUVEnv:
                 py = 600 - (dist/self.sonar.max_range)*580
                 pygame.draw.circle(surf, (255,0,0), (int(px), int(py)), 10, 2)  # bold red ring
 
+         # ---- Cartesian Sonar Display ----
+        # width of side‐panel
+        sw = self.window_size[0] - map_w
+        # origin and size of cartesian box
+        cx0 = map_w + 10
+        cy0 = 10
+        size = sw - 20
+        # background
+        pygame.draw.rect(surf, (30, 30, 30), (cx0, cy0, size, size))
+
+        # centre of sonar display
+        center_x = cx0 + size//2
+        center_y = cy0 + size//2
+        scale = size / self.sonar.max_range
+
+        # plot each beam in local cartesian coords
+        for i, (r, rel_ang) in enumerate(zip(ranges, self.sonar.beam_angles)):
+            # local x,y before rotation
+            dy = r * math.cos(rel_ang)
+            dx = r * math.sin(rel_ang)
+            # map into pixel coords
+            px = center_x + dx * scale
+            py = center_y - dy * scale
+            # hit vs miss colour
+            if hit_mask[i]:
+                col = (255, 255, 0)
+                radius = 3
+            else:
+                col = (50, 50, 50)
+                radius = 2
+            pygame.draw.circle(surf, col, (int(px), int(py)), radius)
+            
         pygame.display.flip()
 
 if __name__=='__main__':

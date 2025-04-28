@@ -2,213 +2,172 @@ import numpy as np
 import pygame
 import sys
 import math
-from environments.test_env import AUVEnv  
+import heapq
+from scipy.ndimage import binary_dilation
+from environments.test_env import AUVEnv
 
-# Particle filter parameters
-NUM_PARTICLES = 50
-MOTION_NOISE = {'v': 0.1, 'omega': 0.05}
-SENSOR_NOISE = 0.1
-BEAMS = 10  # number of beams for subsampling
+# --- A* on a 2D grid ---
+def astar(grid, start, goal):
+    h = lambda a,b: abs(a[0]-b[0]) + abs(a[1]-b[1])
+    open_set = [(h(start,goal), 0, start, None)]
+    came_from = {}
+    cost_so_far = {start: 0}
+    while open_set:
+        f, g, current, parent = heapq.heappop(open_set)
+        if current in came_from:
+            continue
+        came_from[current] = parent
+        if current == goal:
+            break
+        for di, dj in [(1,0),(-1,0),(0,1),(0,-1)]:
+            nb = (current[0]+di, current[1]+dj)
+            if not (0 <= nb[0] < grid.shape[0] and 0 <= nb[1] < grid.shape[1]):
+                continue
+            if grid[nb]:
+                continue
+            new_cost = g + 1
+            if new_cost < cost_so_far.get(nb, np.inf):
+                cost_so_far[nb] = new_cost
+                heapq.heappush(open_set, (new_cost + h(nb,goal), new_cost, nb, current))
+    if goal not in came_from:
+        return None
+    path = []
+    node = goal
+    while node:
+        path.append(node)
+        node = came_from[node]
+    return path[::-1]
 
-# Initialize particles uniformly over free map cells
-def init_particles(env):
-    free = np.argwhere(env.occ_grid == 0)
-    indices = np.random.choice(len(free), size=NUM_PARTICLES, replace=True)
-    particles = []
-    for gi, gj in free[indices]:
-        x = (gj + 0.5) * env.resolution
-        y = (gi + 0.5) * env.resolution
-        theta = np.random.uniform(-math.pi, math.pi)
-        particles.append([x, y, theta])
-    return np.array(particles)
+def to_grid(pose, res):
+    # Convert world (x,y) to grid indices (i,j).
+    x, y, _ = pose
+    return int(y/res), int(x/res)
 
-# Motion update with noise
-def motion_update(particles, control, dt=0.1):
-    v, omega = control
-    noisy_v = v + np.random.normal(0, MOTION_NOISE['v'], size=len(particles))
-    noisy_o = omega + np.random.normal(0, MOTION_NOISE['omega'], size=len(particles))
-    particles[:,2] += noisy_o * dt
-    particles[:,0] += noisy_v * dt * np.cos(particles[:,2])
-    particles[:,1] += noisy_v * dt * np.sin(particles[:,2])
-    return particles
+def to_world(cell, res):
+    # Convert grid (i,j) to world (x,y) at cell center.
+    return ((cell[1]+0.5)*res, (cell[0]+0.5)*res)
 
-# Expected ranges by ray-casting for given beam angles
-def expected_ranges(pose, env, beam_angles):
-    x, y, theta = pose
-    exp = np.full(len(beam_angles), env.sonar.max_range)
-    res = env.resolution
-    for i, rel in enumerate(beam_angles):
-        ang = theta + rel
-        for r in np.arange(0, env.sonar.max_range, res):
-            xi = x + r * math.cos(ang)
-            yi = y + r * math.sin(ang)
-            gi = int(yi / res)
-            gj = int(xi / res)
-            if gi < 0 or gi >= env.occ_grid.shape[0] or gj < 0 or gj >= env.occ_grid.shape[1]:
-                exp[i] = r
-                break
-            if env.occ_grid[gi, gj]:
-                exp[i] = r
-                break
-    return exp
+# Planner parameters
+REPLAN_INTERVAL = 30
+DIRECT_SPEED = 0.2
+ROT_SPEED = 0.5
+ANGLE_TOL = 0.1
 
-# Sensor update: compute log-likelihood and normalize to avoid underflow
-def sensor_update(particles, weights, obs_ranges, beam_angles, hit_mask, env):
-    N = len(particles)
-    log_w = np.zeros(N)
-    for i, p in enumerate(particles):
-        exp = expected_ranges(p, env, beam_angles)
-        # hit beams
-        mask = hit_mask.astype(bool)
-        if np.any(mask):
-            diff_hit = obs_ranges[mask] - exp[mask]
-            log_w[i] = -0.5 * np.sum((diff_hit / SENSOR_NOISE)**2)
-        # missed beams: encourage exp to be near max_range
-        miss = ~mask
-        if np.any(miss):
-            diff_miss = env.sonar.max_range - exp[miss]
-            log_w[i] += -0.5 * np.sum((diff_miss / SENSOR_NOISE)**2)
-    # normalize log weights to prevent underflow
-    max_log = np.max(log_w)
-    w = np.exp(log_w - max_log)
-    w /= np.sum(w)
-    return w
-
-
-# Systematic resampling
-def resample(particles, weights):
-    N = len(particles)
-    positions = (np.arange(N) + np.random.rand()) / N
-    cum = np.cumsum(weights)
-    idx = np.searchsorted(cum, positions)
-    return particles[idx].copy(), np.ones(N) / N
-
-# Estimate pose by weighted average
-def estimate_pose(particles, weights):
-    x = np.average(particles[:,0], weights=weights)
-    y = np.average(particles[:,1], weights=weights)
-    cos_s = np.average(np.cos(particles[:,2]), weights=weights)
-    sin_s = np.average(np.sin(particles[:,2]), weights=weights)
-    theta = math.atan2(sin_s, cos_s)
-    return np.array([x, y, theta])
-
-if __name__ == '__main__':
+if __name__=='__main__':
     pygame.init()
     screen = pygame.display.set_mode((1200, 600))
     clock = pygame.time.Clock()
 
     env = AUVEnv(
         sonar_params={'compute_intensity': False},
-        current_params=None, goal_params=None, beacon_params=None,
+        current_params=None,
+        goal_params={'radius': 0.5},
+        beacon_params={'ping_interval':1.0, 'pulse_duration':0.1,
+                       'beacon_intensity':1.0,'ping_noise':0.01},
         window_size=(600,600)
     )
     obs = env.reset()
 
-    # Precompute beam indices and angles
-    total = env.sonar.n_beams
-    beam_idxs = np.linspace(0, total-1, BEAMS, dtype=int)
-    beam_angles = env.sonar.beam_angles[beam_idxs]
+    step_count = 0
+    current_path = None
+    path_idx = 0
+    occ_inf = np.zeros(env.grid_size, dtype=np.uint8)
 
-    # Initialize PF
-    particles = init_particles(env)
-    weights = np.ones(NUM_PARTICLES) / NUM_PARTICLES
-
-    iteration = 0
-    while True:
-        # Handle events
+    running = True
+    while running:
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
-                pygame.quit()
-                sys.exit()
+                running = False
 
-        # Control input
-        keys = pygame.key.get_pressed()
-        v = 1.0 if keys[pygame.K_UP] else -1.0 if keys[pygame.K_DOWN] else 0.0
-        omega = 1.0 if keys[pygame.K_LEFT] else -1.0 if keys[pygame.K_RIGHT] else 0.0
+        # Obtain last observation
+        ranges, intensities, hits = obs
 
-        # True step
+        # Beacon detection
+        beacon_beams = [i for i,inten in enumerate(intensities or [])
+                        if hits[i] and inten >= env.beacon_intensity*0.9]
+
+        # Decide control
+        if beacon_beams:
+            # Direct ping steering
+            idx = beacon_beams[0]
+            beam_angle = env.sonar.beam_angles[idx]
+            if abs(beam_angle) > ANGLE_TOL:
+                v = 0.0
+                omega = math.copysign(ROT_SPEED, beam_angle)
+            else:
+                v = DIRECT_SPEED
+                omega = 0.0
+        else:
+            # Global A* planner on true map for robustness
+            if step_count % REPLAN_INTERVAL == 0 or current_path is None:
+                # Build occupancy & inflate
+                occ = env.occ_grid.copy()
+                occ_inf = binary_dilation(occ, structure=np.ones((3,3))).astype(np.uint8)
+                start = to_grid(env.pose, env.resolution)
+                goal_cell = (int(env.goal[1]/env.resolution),
+                             int(env.goal[0]/env.resolution))
+                current_path = astar(occ_inf, start, goal_cell)
+                path_idx = 0
+
+            if current_path and len(current_path) > 1:
+                next_cell = current_path[min(path_idx+1, len(current_path)-1)]
+                wx, wy = to_world(next_cell, env.resolution)
+                dx = wx - env.pose[0]
+                dy = wy - env.pose[1]
+                desired = math.atan2(dy, dx)
+                db = (desired - env.pose[2] + math.pi) % (2*math.pi) - math.pi
+                if abs(db) > ANGLE_TOL:
+                    v = 0.0
+                    omega = math.copysign(ROT_SPEED, db)
+                else:
+                    v = DIRECT_SPEED
+                    omega = 0.0
+                    path_idx += 1
+            else:
+                # Fallback spin
+                v = 0.0
+                omega = ROT_SPEED
+
+        # Step true environment
         obs, _, done, _ = env.step((v, omega))
         if done:
             obs = env.reset()
-            particles = init_particles(env)
-            weights = np.ones(NUM_PARTICLES) / NUM_PARTICLES
 
-        full_ranges, _, full_hit = obs
-        obs_ranges = full_ranges[beam_idxs]
-        hit_mask = full_hit[beam_idxs]
-
-        # PF predict
-        particles = motion_update(particles, (v, omega))
-        # PF update
-        weights = sensor_update(particles, weights, obs_ranges, beam_angles, hit_mask, env)
-        # Resample
-        particles, weights = resample(particles, weights)
-        # Estimate
-        est = estimate_pose(particles, weights)
-
-        # Render panels
+        # Draw left and right panels
         screen.fill((0,0,0))
-        total_w, total_h = screen.get_size()
-        map_w = total_w // 2
+        map_w = 600
         H, W = env.grid_size
         cw = map_w / W
-        ch = total_h / H
+        ch = map_w / H
 
-        # Left panel: simulation
+        # Left: actual environment
         for y, x in zip(*np.where(env.occ_grid)):
             pygame.draw.rect(screen, (100,100,100), (x*cw, y*ch, cw, ch))
-        xpix = env.pose[0]/env.resolution * cw
-        ypix = env.pose[1]/env.resolution * ch
-        pygame.draw.circle(screen, (0,255,0), (int(xpix), int(ypix)), 5)
-        for r, rel, hit in zip(full_ranges, env.sonar.beam_angles, full_hit):
-            ang = env.pose[2] + rel
-            x2 = xpix + (r/env.resolution)*cw * math.cos(ang)
-            y2 = ypix + (r/env.resolution)*ch * math.sin(ang)
-            pygame.draw.line(screen, (0,200,200), (xpix, ypix), (x2, y2), 1)
+        x_pix = env.pose[0]/env.resolution * cw
+        y_pix = env.pose[1]/env.resolution * ch
+        pygame.draw.circle(screen, (0,255,0), (int(x_pix), int(y_pix)), 5)
+        for r, rel_ang, hit in zip(ranges, env.sonar.beam_angles, hits):
+            ang = env.pose[2] + rel_ang
+            x2 = x_pix + (r/env.resolution)*cw * math.cos(ang)
+            y2 = y_pix + (r/env.resolution)*ch * math.sin(ang)
+            pygame.draw.line(screen, (0,200,200), (x_pix, y_pix), (x2, y2), 1)
             if hit:
                 pygame.draw.circle(screen, (255,0,0), (int(x2), int(y2)), 3)
 
-        # Right panel: PF map
+        # Right: planner path and inflated map
         offset = map_w
-        # draw map background
-        for y, x in zip(*np.where(env.occ_grid)):
+        for y, x in zip(*np.where(occ_inf)):
             pygame.draw.rect(screen, (50,50,50), (offset + x*cw, y*ch, cw, ch))
-        # draw sonar hits
-        angles_full = env.sonar.beam_angles + env.pose[2]
-        xs = full_ranges * np.cos(angles_full)
-        ys = full_ranges * np.sin(angles_full)
-        wpts = np.stack((env.pose[0] + xs, env.pose[1] + ys), axis=1)
-        for (wx, wy), m in zip(wpts, full_hit):
-            if not m: continue
-            px = offset + (wx/env.resolution) * cw
-            py = (wy/env.resolution) * ch
-            pygame.draw.circle(screen, (255,0,0), (int(px), int(py)), 4)
-
-        # draw particles
-        for x, y, theta in particles:
-            px = offset + (x/env.resolution) * cw
-            py = (y/env.resolution) * ch
-            pygame.draw.circle(screen, (255,0,0), (int(px), int(py)), 2)
-            dx = math.cos(theta) * cw
-            dy = math.sin(theta) * ch
-            pygame.draw.line(screen, (255,0,0), (int(px), int(py)), (int(px+dx), int(py+dy)), 1)
-
-        # draw true pose (green) on right
-        px_true = offset + (env.pose[0] / env.resolution) * cw
-        py_true = (env.pose[1] / env.resolution) * ch
-        pygame.draw.circle(screen, (0,255,0), (int(px_true), int(py_true)), 5)
-        dx_t = math.cos(env.pose[2]) * cw
-        dy_t = math.sin(env.pose[2]) * ch
-        pygame.draw.line(screen, (0,255,0), (int(px_true), int(py_true)), (int(px_true+dx_t), int(py_true+dy_t)), 2)
-
-        # draw estimated pose (blue) on right
-        px_est = offset + (est[0] / env.resolution) * cw
-        py_est = (est[1] / env.resolution) * ch
-        pygame.draw.circle(screen, (0,0,255), (int(px_est), int(py_est)), 5)
-        dx_e = math.cos(est[2]) * cw
-        dy_e = math.sin(est[2]) * ch
-        pygame.draw.line(screen, (0,0,255), (int(px_est), int(py_est)), (int(px_est+dx_e), int(py_est+dy_e)), 2)
+        if current_path:
+            for cell in current_path:
+                xw, yw = to_world(cell, env.resolution)
+                px = offset + xw/env.resolution * cw
+                py = yw/env.resolution * ch
+                pygame.draw.circle(screen, (0,0,255), (int(px), int(py)), 3)
+        gx = env.goal[0]/env.resolution * cw + offset
+        gy = env.goal[1]/env.resolution * ch
+        pygame.draw.circle(screen, (255,255,0), (int(gx), int(gy)), 6, 2)
 
         pygame.display.flip()
         clock.tick(30)
-        iteration += 1
+        step_count += 1

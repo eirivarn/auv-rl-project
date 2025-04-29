@@ -17,6 +17,7 @@ class SonarSensor:
                  debris_rate=5,
                  ghost_prob=0.05,
                  ghost_decay=0.3):
+        
         self.fov = fov
         self.n_beams = n_beams
         self.max_range = max_range
@@ -28,6 +29,7 @@ class SonarSensor:
         self.ghost_prob = ghost_prob
         self.ghost_decay = ghost_decay
         self.beam_angles = np.linspace(-fov/2, fov/2, n_beams)
+        
 
     def get_readings(self, occ_grid, refl_grid, pose):
         x, y, heading = pose
@@ -72,18 +74,19 @@ class SonarSensor:
         return spurious
 
 class simpleAUVEnv:
-    def __init__(self,
-                 grid_size=(200, 200),
-                 resolution=0.05,
-                 sonar_params=None,
-                 current_params=None,
-                 goal_params=None,
-                 beacon_params=None,
+    def __init__(self, grid_size=(200, 200), resolution=0.05,
+                 sonar_params=None, current_params=None,
+                 goal_params=None, beacon_params=None,
                  window_size=(800, 600)):
+
         self.grid_size = grid_size
         self.resolution = resolution
         self.window_size = window_size
         self._build_maps()
+
+        self.linear_velocity = 0.0
+        self.angular_velocity = 0.0
+        self.previous_action = 0.0
 
         default_sonar = dict(
             fov=np.deg2rad(90), n_beams=60, max_range=10.0,
@@ -110,7 +113,7 @@ class simpleAUVEnv:
             self.ping_noise = beacon_params.get('ping_noise', 0.01)
 
         self.reset()
-
+        
     def _build_maps(self):
         H, W = self.grid_size
         self.occ_grid = np.zeros((H, W), dtype=np.uint8)
@@ -125,28 +128,40 @@ class simpleAUVEnv:
         for cx, cy, w, h in rectangles:
             self.occ_grid[cy:cy+h, cx:cx+w] = 1
             self.refl_grid[cy:cy+h, cx:cx+w] = np.random.uniform(0.5, 1.0, size=(h, w))
-
-    def reset(self):
-        H, W = self.grid_size
-        self.pose = np.array([W/2*self.resolution,
-                              H/2*self.resolution, 0.0])
-        free = np.argwhere(self.occ_grid == 0)
-        dists = np.linalg.norm((free - np.array([H/2, W/2])) * self.resolution, axis=1)
-        min_d = min(H, W) * self.resolution * 0.3
-        candidates = free[dists > min_d] if len(free) else free
-        idx = candidates[np.random.randint(len(candidates))]
-        self.goal = np.array([idx[1]*self.resolution, idx[0]*self.resolution])
-        self.time = 0.0
-        return self._get_obs()
-
+    
+  
     def _get_obs(self):
         ranges, intensities, hit_mask = self.sonar.get_readings(
-            self.occ_grid, self.refl_grid, self.pose)
+            self.occ_grid, self.refl_grid, self.pose
+        )
+
+        heading = np.array([np.cos(self.pose[2]), np.sin(self.pose[2])])
+
+        rel_goal_vec = self.goal - self.pose[:2]
+        goal_distance = np.linalg.norm(rel_goal_vec)
+        goal_angle = np.arctan2(rel_goal_vec[1], rel_goal_vec[0]) - self.pose[2]
+        goal_angle = np.arctan2(np.sin(goal_angle), np.cos(goal_angle))
+
+        obs = np.concatenate([
+            ranges,
+            intensities if intensities is not None else [],
+            heading,
+            [goal_distance, goal_angle],
+            [self.linear_velocity, self.angular_velocity],
+            [self.previous_action]
+        ])
+        return obs
+     
+
+    def _get_raw_obs(self):
+        ranges, intensities, hit_mask = self.sonar.get_readings(
+            self.occ_grid, self.refl_grid, self.pose
+        )
         if self.beacon_enabled and (self.time % self.ping_interval) < self.pulse_duration:
             dx, dy = self.goal - self.pose[:2]
             dist = math.hypot(dx, dy)
             bearing = math.atan2(dy, dx) - self.pose[2]
-            bearing = (bearing + math.pi) % (2*math.pi) - math.pi
+            bearing = (bearing + math.pi) % (2 * math.pi) - math.pi
             idx = np.argmin(np.abs(self.sonar.beam_angles - bearing))
             if dist < self.sonar.max_range:
                 ranges[idx] = dist + np.random.normal(0, self.ping_noise)
@@ -155,34 +170,70 @@ class simpleAUVEnv:
                     intensities[idx] = self.beacon_intensity
         return ranges, intensities, hit_mask
 
+    def reset(self):
+        H, W = self.grid_size
+
+        x = W / 2 * self.resolution
+        y = H / 2 * self.resolution
+        theta = 0.0
+        self.pose = np.array([x, y, theta])
+
+        self.linear_velocity = 0.0
+        self.angular_velocity = 0.0
+        self.previous_action = 0.0
+
+        angle = np.random.uniform(-np.pi, np.pi)
+        dist = np.random.uniform(2.0, 5.0)
+        goal_x = x + dist * np.cos(angle)
+        goal_y = y + dist * np.sin(angle)
+        goal_x = np.clip(goal_x, 0, W * self.resolution)
+        goal_y = np.clip(goal_y, 0, H * self.resolution)
+        self.goal = np.array([goal_x, goal_y])
+
+        dx, dy = self.goal - self.pose[:2]
+        self.pose[2] = np.arctan2(dy, dx)
+
+        self.time = 0.0
+        return self._get_obs()
+
     def step(self, action):
         v, omega = action
-        dt = 0.1
-        self.pose[2] += omega * dt
-        self.pose[0] += v * dt * math.cos(self.pose[2])
-        self.pose[1] += v * dt * math.sin(self.pose[2])
-        if self.current_enabled:
-            mag = self.cur_strength * math.sin(2*math.pi*self.time / self.cur_period)
-            self.pose[0] += mag * math.cos(self.cur_direction) * dt
-            self.pose[1] += mag * math.sin(self.cur_direction) * dt
-        self.time += dt
+        v = np.clip(v, -1.0, 1.0)
+        omega = np.clip(omega, -np.pi/4, np.pi/4)
 
-        gi = int(self.pose[1] / self.resolution)
-        gj = int(self.pose[0] / self.resolution)
-        done = False
-        reward = -0.01
-        if (gi < 0 or gi >= self.occ_grid.shape[0] or
-            gj < 0 or gj >= self.occ_grid.shape[1] or
-            self.occ_grid[gi, gj] == 1):
-            done, reward = True, -1.0
-            obs = None
-        elif np.linalg.norm(self.pose[:2] - self.goal) <= self.goal_radius:
-            done, reward = True, +1.0
-            obs = None
-        else:
-            obs = self._get_obs()
+        self.linear_velocity = v
+        self.angular_velocity = omega
 
-        return obs, reward, done, {}
+        # Save previous distance to goal
+        prev_distance = np.linalg.norm(self.goal - self.pose[:2])
+
+        # Apply motion
+        self.pose[2] += omega
+        self.pose[2] = np.arctan2(np.sin(self.pose[2]), np.cos(self.pose[2]))
+        self.pose[0] += v * np.cos(self.pose[2])
+        self.pose[1] += v * np.sin(self.pose[2])
+
+        # Compute new distance
+        new_distance = np.linalg.norm(self.goal - self.pose[:2])
+        progress = prev_distance - new_distance  # positive if moving closer
+
+        # Reward structure
+        reward = 1.0 * progress                      # reward for getting closer
+        reward -= 0.01 * abs(omega)                   # slight penalty for turning too much
+        reward -= 0.001                               # small time penalty
+
+        # Done if close to goal
+        done = new_distance < 1.0
+        if done:
+            reward += 100.0  # bonus for reaching the goal
+
+        # Keep inside map
+        self.pose[0] = np.clip(self.pose[0], 0, self.grid_size[1] * self.resolution)
+        self.pose[1] = np.clip(self.pose[1], 0, self.grid_size[0] * self.resolution)
+
+        self.previous_action = v
+        return self._get_obs(), reward, done, {}
+
 
     def render(self):
         surf = pygame.display.set_mode(self.window_size)
@@ -214,7 +265,7 @@ class simpleAUVEnv:
         pygame.draw.line(surf,(0,255,0),(int(x_pix),int(y_pix)),(int(ex),int(ey)),2)
 
         # get your ranges/intensities/mask
-        ranges, intensities, hit_mask = self._get_obs()
+        ranges, intensities, hit_mask = self._get_raw_obs()
 
         ping_idx = None
         if self.beacon_enabled and (self.time % self.ping_interval) < self.pulse_duration:
@@ -317,7 +368,7 @@ class simpleAUVEnv:
 
 if __name__=='__main__':
     pygame.init()
-    env = AUVEnv(
+    env = simpleAUVEnv(
         sonar_params    = {'compute_intensity': True},
         current_params  = {'strength': 0.2, 'period': 30.0, 'direction': np.deg2rad(45)},
         goal_params     = {'radius': 0.5},

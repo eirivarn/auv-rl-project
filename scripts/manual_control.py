@@ -2,13 +2,13 @@
 
 import sys
 import pygame
-from environments.simple_env import AUVEnv
+from environments.simple_env import simpleAUVEnv
 
 def main():
     # Initialize Pygame before any display or event calls
     pygame.init()
 
-    env = AUVEnv(
+    env = simpleAUVEnv(
         sonar_params   = {'compute_intensity': False},
         current_params = None,    # disable currents
         goal_params    = {'radius': 0.5},

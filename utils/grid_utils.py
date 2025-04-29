@@ -1,7 +1,3 @@
-"""
-Utility functions for training and visualizing Q-learning on the GridDockEnv.
-"""
-
 import matplotlib.pyplot as plt
 from typing import List
 from environments.grid_env import GridDockEnv
@@ -11,6 +7,33 @@ import numpy as np
 from matplotlib import animation
 import matplotlib.patches as patches
 from IPython.display import HTML
+
+def train_dqn(env, agent, episodes=1000, max_steps=100):
+    rewards_hist = []
+    for ep in range(episodes):
+        state = env.reset()
+        total_reward = 0
+        for t in range(max_steps):
+            action = agent.select_action(state)
+            next_s, reward, done, _ = env.step(action)
+
+            # you can apply reward shaping here if desired
+            agent.store_transition(state, action, reward, next_s, done)
+            agent.optimize_model()
+
+            state = next_s
+            total_reward += reward
+            agent.step_counter += 1
+            agent.maybe_update_target()
+
+            if done:
+                break
+
+        agent.update_epsilon()
+        rewards_hist.append(total_reward)
+
+    return rewards_hist
+
 
 def train_agent(env: GridDockEnv,
                 agent: QLearningAgent,
@@ -131,3 +154,34 @@ def animate_agent_matplotlib(env, agent, max_steps: int = 100, delay: float = 0.
     )
     plt.close(fig)
     return HTML(ani.to_jshtml())
+
+def evaluate_agent(env, agent, episodes: int = 100, max_steps: int = 100):
+    """
+    Run the agent (greedy policy) for `episodes` random episodes,
+    and return (success_rate, avg_steps_on_success).
+    """
+    # Force greedy
+    agent.epsilon = 0.0
+
+    successes = 0
+    steps_list = []
+
+    for _ in range(episodes):
+        obs = env.reset()
+        done = False
+        steps = 0
+
+        while not done and steps < max_steps:
+            action = agent.select_action(obs)
+            obs, _, done, _ = env.step(action)
+            steps += 1
+
+        if done:
+            successes += 1
+            steps_list.append(steps)
+
+    success_rate = successes / episodes
+    avg_steps    = sum(steps_list) / len(steps_list) if steps_list else None
+    return success_rate, avg_steps
+
+

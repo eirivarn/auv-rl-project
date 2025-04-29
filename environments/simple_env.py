@@ -71,7 +71,7 @@ class SonarSensor:
                     spurious.append((i, r1, inten))
         return spurious
 
-class AUVEnv:
+class simpleAUVEnv:
     def __init__(self,
                  grid_size=(200, 200),
                  resolution=0.05,

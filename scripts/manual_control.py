@@ -2,7 +2,7 @@
 
 import sys
 import pygame
-from environments.test_env import AUVEnv
+from environments.simple_env import AUVEnv
 
 def main():
     # Initialize Pygame before any display or event calls

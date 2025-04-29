@@ -2,7 +2,7 @@ import numpy as np
 import pygame
 import sys
 import math
-from environments.test_env import AUVEnv
+from environments.simple_env import AUVEnv
 
 # SLAM & docking parameters
 LOG_ODDS_FREE = np.log(0.3/0.7)

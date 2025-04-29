@@ -4,7 +4,7 @@ import sys
 import math
 import heapq
 from scipy.ndimage import binary_dilation
-from environments.test_env import AUVEnv
+from environments.simple_env import AUVEnv
 
 # --- A* on a 2D grid ---
 def astar(grid, start, goal):

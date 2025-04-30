@@ -1,9 +1,7 @@
 import numpy as np
 import pygame
-import sys
 import math
 from collections import deque
-import numpy as np, math, pygame, sys
 
 
 class SonarSensor:
@@ -84,30 +82,34 @@ class simpleAUVEnv:
                  sonar_params=None,
                  docks=None,
                  dock_radius=0.2,
-                 dock_reward=1000,
+                 dock_reward=1.0,
                  use_history: bool = False,
                  history_length: int = 3,
-                 window_size=(800, 600)):
+                 window_size=(800, 600),
+                 # ── NEW params ───────────────────────────────────
+                 n_beams: int     = 8,           # compress beams
+                 start_mode: str  = 'center',    # or 'random'
+                 discrete_actions: bool = True   # switch to a small set of actions
+                ):
                  
         self.grid_size = grid_size
         self.resolution = resolution
         self.window_size = window_size
         self._build_maps()
+        self.start_mode = start_mode
 
         self.wall_thresh = 0.5
         self.wall_penalty_coeff = 2.0
-        self.collision_penalty = 500.0
+        self.collision_penalty = -1.0
     
         self.use_history    = use_history
         self.history_length = history_length
         # create a buffer to hold (history_length + 1) raw-observations
         self._history_buffer = deque(maxlen=history_length + 1)
 
-        # ── SONAR SETUP ───────────────────────────────────────────────
-        # we only care about ranges, no intensities or ghost echoes:
         default_sonar = dict(
             fov=np.deg2rad(360),
-            n_beams=20,
+            n_beams=n_beams,                # use fewer beams
             max_range=10.0,
             resolution=resolution,
             noise_std=0.0,
@@ -115,7 +117,24 @@ class simpleAUVEnv:
             debris_rate=0,
             ghost_prob=0.0
         )
-        self.sonar = SonarSensor(**(sonar_params or default_sonar))
+        
+        params = default_sonar.copy()
+        if sonar_params:
+            params.update(sonar_params)
+        self.sonar = SonarSensor(**params)
+
+
+        # ── ACTION SPACE ─────────────────────────────────────────────────
+        self.discrete_actions = discrete_actions
+        if self.discrete_actions:
+            self.actions = [
+                ( 0.2,  0.0),   # forward
+                (-0.2,  0.0),   # back
+                ( 0.0,  0.2),   # turn left
+                ( 0.0, -0.2),   # turn right
+            ]
+        else:
+            self.actions = None
 
         # ── DOCKS SETUP ──────────────────────────────────────────────
         if isinstance(docks, int):
@@ -153,31 +172,24 @@ class simpleAUVEnv:
         return np.array([x,y])
   
     def _get_raw_obs(self):
-        """
-        Simplified observation:
-          - sonar ranges: shape (n_beams,)
-          - per‐dock [distance, bearing]: shape (2*len(self.docks),)
-        """
-        # 1) only take ranges
+        # 1) normalized sonar: [0…1]
         ranges, _, _ = self.sonar.get_readings(
             self.occ_grid, self.refl_grid, self.pose
         )
+        ranges = ranges / self.sonar.max_range
 
-        # 2) per‐dock distance & bearing
+        # 2) per‐dock [distance (normalized), bearing (sin,cos)]
         dock_feats = []
         for dock in self.docks:
             dx, dy = dock - self.pose[:2]
-            dist = math.hypot(dx, dy)
+            dist = math.hypot(dx, dy) / (math.hypot(*self.grid_size)*self.resolution)
             ang  = math.atan2(dy, dx) - self.pose[2]
-            ang  = (ang + math.pi) % (2*math.pi) - math.pi
-            dock_feats.extend([dist, ang])
+            dock_feats.extend([dist, math.sin(ang), math.cos(ang)])
 
-        # 3) build flat vector
         return np.concatenate([
             ranges.astype(np.float32),
             np.array(dock_feats, dtype=np.float32)
         ], axis=0)
-
 
     def _get_obs(self):
         # Return either the latest raw obs or the full history stack
@@ -189,14 +201,17 @@ class simpleAUVEnv:
     def reset(self):
         # 1) Place AUV at map center
         H, W = self.grid_size
-        x_center = (W/2) * self.resolution
-        y_center = (H/2) * self.resolution
-        self.pose = np.array([x_center, y_center, 0.0], dtype=float)
-
-        # 2) Reset motion state
-        self.linear_velocity  = 0.0
-        self.angular_velocity = 0.0
-        self.previous_action  = 0.0
+        if self.start_mode == 'center':
+            x0 = (W/2) * self.resolution
+            y0 = (H/2) * self.resolution
+        else:
+            # pick a random free grid cell
+            frees = np.argwhere(self.occ_grid==0)
+            cy, cx = frees[np.random.randint(len(frees))]
+            x0 = (cx + 0.5) * self.resolution
+            y0 = (cy + 0.5) * self.resolution
+        th0 = 0.0
+        self.pose = np.array([x0, y0, th0], dtype=float)
 
         # 3) Clear visited flags
         self._visited = [False] * len(self.docks)
@@ -226,12 +241,14 @@ class simpleAUVEnv:
         return self._get_obs()
     
     def step(self, action):
-        # 1) Unpack & clip action
-        v, omega = action
+        # 1) Discrete vs. continuous action
+        if self.discrete_actions:
+            v, omega = self.actions[int(action)]
+        else:
+            v, omega = action
         max_v, max_omega = 1.0, np.pi/4
         v     = np.clip(v,       -max_v,     max_v)
         omega = np.clip(omega, -max_omega, max_omega)
-        self.linear_velocity, self.angular_velocity = v, omega
 
         # 2) Integrate orientation & position
         self.pose[2] = math.atan2(
@@ -287,7 +304,7 @@ class simpleAUVEnv:
 
         # 8) Collision & termination
         if collision:
-            reward -= self.collision_penalty
+            reward = self.collision_penalty
             done = True
         else:
             done = all(self._visited)
@@ -381,14 +398,7 @@ class simpleAUVEnv:
         pygame.display.flip()
 
 
-
     def get_cartesian_readings(self):
-        """
-        Returns sonar returns as (local_pts, world_pts, hit_mask):
-        - local_pts: N×2 array of (dx, dy) in the robot frame
-        - world_pts: N×2 array of absolute map-frame positions
-        - hit_mask: boolean mask of valid hits
-        """
         ranges, _, hit_mask = self.sonar.get_readings(self.occ_grid, self.refl_grid, self.pose)
         angles = self.sonar.beam_angles + self.pose[2]
         ys = ranges * np.cos(angles)
@@ -396,26 +406,3 @@ class simpleAUVEnv:
         local_pts = np.stack((xs, ys), axis=1)
         world_pts = local_pts + self.pose[:2]
         return local_pts, world_pts, hit_mask
-
-if __name__=='__main__':
-    pygame.init()
-    env = simpleAUVEnv(
-        sonar_params    = {'compute_intensity': True},
-        current_params  = {'strength': 0.2, 'period': 30.0, 'direction': np.deg2rad(45)},
-        goal_params     = {'radius': 0.5},
-        beacon_params   = {'ping_interval': 1.0, 'pulse_duration': 0.1,
-                            'beacon_intensity': 1.0, 'ping_noise': 0.01}
-    )
-    clock = pygame.time.Clock()
-    obs = env.reset()
-    running = True
-    while running:
-        for e in pygame.event.get():
-            if e.type==pygame.QUIT: running=False
-        keys = pygame.key.get_pressed()
-        v     =  1.0 if keys[pygame.K_UP]   else -1.0 if keys[pygame.K_DOWN]  else 0.0
-        omega =  1.0 if keys[pygame.K_LEFT] else -1.0 if keys[pygame.K_RIGHT] else 0.0
-        obs, rew, done, _ = env.step((v, omega))
-        if done: obs = env.reset()
-        env.render()
-        clock.tick(60)

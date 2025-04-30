@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-# 1) A small MLP to approximate Q(s,a)
+# 1) The same MLP as before
 class DQNNetwork(nn.Module):
     def __init__(self, input_dim, hidden_dims, output_dim):
         super().__init__()
@@ -23,7 +23,6 @@ class DQNNetwork(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-
 class DQNAgent:
     def __init__(self,
                  env,
@@ -36,33 +35,40 @@ class DQNAgent:
                  batch_size=64,
                  buffer_size=10_000,
                  target_update=10,
+                 # ── LiDAR flags ───────────────────────────
+                 use_lidar: bool = False,
+                 lidar_range: int = 10,
                  device=None):
         """
         env: your GridDockEnv
-        hidden_dims: list of hidden-layer sizes
-        lr, gamma: learning rate & discount
-        epsilon_*: for ε-greedy
-        batch_size, buffer_size: replay‐buffer params
-        target_update: sync freq for target network
+        use_lidar: if True, env._get_obs() returns [dx,dy,d_up,d_dn,d_lt,d_rt]
+        lidar_range: maximum scan distance (for env & for reference)
+        rest: unchanged from your original agent
         """
         self.env = env
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        # state is a 2-vector (dx,dy)
-        self.input_dim  = len(env.observation_space.low)
-        self.output_dim = env.action_space.n
+        # ── store LiDAR settings ───────────────────────────
+        self.use_lidar   = use_lidar
+        self.lidar_range = lidar_range
 
-        # policy & target nets
+        # ── dynamically infer the input dimension from the env obs-space ──
+        # env.observation_space.low.shape[0] will be 2 without LiDAR, 6 with it
+        self.input_dim  = int(env.observation_space.low.shape[0])
+        self.output_dim = int(env.action_space.n)
+
+        # ── build policy & target nets ───────────────────────
         self.policy_net = DQNNetwork(self.input_dim, hidden_dims, self.output_dim).to(self.device)
         self.target_net = DQNNetwork(self.input_dim, hidden_dims, self.output_dim).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
+        # optimizer, loss, discount
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         self.criterion = nn.MSELoss()
         self.gamma     = gamma
 
-        # ε-greedy params
+        # ε-greedy
         self.epsilon       = epsilon_start
         self.epsilon_min   = epsilon_min
         self.epsilon_decay = epsilon_decay
@@ -76,6 +82,7 @@ class DQNAgent:
         self.step_counter  = 0
 
     def select_action(self, state):
+        # state should already include LiDAR dims if use_lidar=True
         if random.random() < self.epsilon:
             return self.env.action_space.sample()
         with torch.no_grad():
@@ -90,14 +97,14 @@ class DQNAgent:
         batch = random.sample(self.memory, self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        # Stack into single numpy arrays
-        states_np      = np.array(states,      dtype=np.float32)  # shape: [batch, state_dim]
+        # stack into numpy arrays for speed
+        states_np      = np.array(states,      dtype=np.float32)
         next_states_np = np.array(next_states, dtype=np.float32)
-        actions_np     = np.array(actions,     dtype=np.int64)    # shape: [batch]
-        rewards_np     = np.array(rewards,     dtype=np.float32)  # shape: [batch]
-        dones_np       = np.array(dones,       dtype=np.float32)  # shape: [batch]
+        actions_np     = np.array(actions,     dtype=np.int64)
+        rewards_np     = np.array(rewards,     dtype=np.float32)
+        dones_np       = np.array(dones,       dtype=np.float32)
 
-        # Convert once to torch tensors
+        # convert once to torch tensors
         states_tensor      = torch.from_numpy(states_np).to(self.device)
         next_states_tensor = torch.from_numpy(next_states_np).to(self.device)
         actions_tensor     = torch.from_numpy(actions_np).unsqueeze(1).to(self.device)
@@ -121,7 +128,6 @@ class DQNAgent:
             target_q   = rewards + (1 - dones) * self.gamma * max_next_q
 
         loss = self.criterion(q_values, target_q)
-
         self.optimizer.zero_grad()
         loss.backward()
         self.optimizer.step()

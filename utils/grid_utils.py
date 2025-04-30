@@ -91,6 +91,43 @@ def plot_epsilon(eps_history: List[float]):
     plt.tight_layout()
     plt.show()
 
+def plot_environment(env, figsize: tuple = (5,5)):
+    """
+    Reset the env once and plot the grid, obstacles, agent, and goal as a static figure.
+    
+    Args:
+        env:      Your GridDockEnv (must support reset(), env.agent_pos, env.goal_pos, env.obstacles, env.grid_size).
+        figsize:  Matplotlib figure size.
+    """
+    # 1) grab a fresh layout
+    obs = env.reset()
+
+    # 2) prep figure
+    fig, ax = plt.subplots(figsize=figsize)
+    W, H = env.grid_size
+    ax.set_xlim(-0.5, W - 0.5)
+    ax.set_ylim(-0.5, H - 0.5)
+    ax.set_xticks(range(W))
+    ax.set_yticks(range(H))
+    ax.grid(True)
+    
+    # 3) obstacles (if any)
+    for (ox, oy) in getattr(env, 'obstacles', []):
+        rect = patches.Rectangle((ox - 0.5, oy - 0.5), 1, 1, color='black')
+        ax.add_patch(rect)
+    
+    # 4) goal
+    gx, gy = env.goal_pos
+    rect = patches.Rectangle((gx - 0.5, gy - 0.5), 1, 1, color='green')
+    ax.add_patch(rect)
+    
+    # 5) agent
+    ax.plot(env.agent_pos[0], env.agent_pos[1],
+            marker='o', color='blue', markersize=12)
+    
+    ax.set_title("Grid Environment")
+    plt.show()
+
 
 def animate_agent_matplotlib(env, agent, max_steps: int = 100, delay: float = 0.1, figsize: tuple = (5,5)):
     """

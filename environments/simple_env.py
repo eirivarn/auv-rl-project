@@ -128,10 +128,10 @@ class simpleAUVEnv:
         self.discrete_actions = discrete_actions
         if self.discrete_actions:
             self.actions = [
-                ( 0.2,  0.0),   # forward
-                (-0.2,  0.0),   # back
-                ( 0.0,  0.2),   # turn left
-                ( 0.0, -0.2),   # turn right
+                ( 0.3,  0.0),   # forward
+                (-0.3,  0.0),   # back
+                ( 0.0,  0.3),   # turn left
+                ( 0.0, -0.3),   # turn right
             ]
         else:
             self.actions = None
@@ -241,79 +241,66 @@ class simpleAUVEnv:
         return self._get_obs()
     
     def step(self, action):
-        # 1) Discrete vs. continuous action
+        """
+        1) Decode the action into (v, ω).
+        2) Compute a candidate new pose.
+        3) Ray‐march along the straight‐line path in small increments
+           to see if you’d clip any occupied cell.
+        4) If so, cancel the translation (but keep your new heading),
+           so you can ‘reverse’ or turn yourself free.
+        5) Apply simple +1/–1 reward (–1 per step, +1 on dock, no end on wall).
+        """
+        # ─── 1) Unpack & clip ──────────────────────────────────────────
         if self.discrete_actions:
             v, omega = self.actions[int(action)]
         else:
             v, omega = action
-        max_v, max_omega = 1.0, np.pi/4
-        v     = np.clip(v,       -max_v,     max_v)
-        omega = np.clip(omega, -max_omega, max_omega)
+        v     = float(np.clip(v,      -1.0, 1.0))
+        omega = float(np.clip(omega, -np.pi/4, np.pi/4))
 
-        # 2) Integrate orientation & position
-        self.pose[2] = math.atan2(
-            math.sin(self.pose[2] + omega),
-            math.cos(self.pose[2] + omega)
+        # ─── 2) Old pose & proposed new pose ──────────────────────────
+        old_x, old_y, old_th = self.pose
+        new_th = math.atan2(
+            math.sin(old_th + omega),
+            math.cos(old_th + omega)
         )
-        self.pose[0] += v * math.cos(self.pose[2])
-        self.pose[1] += v * math.sin(self.pose[2])
+        new_x  = old_x + v * math.cos(new_th)
+        new_y  = old_y + v * math.sin(new_th)
 
-        # 3) Collision detection
-        cx = int(np.clip(self.pose[0],
-                         0, self.grid_size[1]*self.resolution - 1e-5)
-                 / self.resolution)
-        cy = int(np.clip(self.pose[1],
-                         0, self.grid_size[0]*self.resolution - 1e-5)
-                 / self.resolution)
-        collision = bool(self.occ_grid[cy, cx])
+        # ─── 3) Continuous collision check ────────────────────────────
+        # march in small steps along the line from old→new
+        dx, dy = new_x - old_x, new_y - old_y
+        dist   = math.hypot(dx, dy)
+        n_steps = max(1, int(dist / (self.resolution * 0.3)))  # sample every ~0.3 cell
+        collided = False
+        for i in range(1, n_steps+1):
+            xi = old_x + dx * (i / n_steps)
+            yi = old_y + dy * (i / n_steps)
+            ci = int(np.clip(xi / self.resolution, 0, self.grid_size[1]-1))
+            ri = int(np.clip(yi / self.resolution, 0, self.grid_size[0]-1))
+            if self.occ_grid[ri, ci]:
+                collided = True
+                break
 
-        # 4) Reward from visiting docks
-        reward = 0.0
-        for i, dock in enumerate(self.docks):
-            if not self._visited[i]:
-                if np.linalg.norm(self.pose[:2] - dock) < self.dock_radius:
-                    self._visited[i] = True
-                    reward += self.dock_reward
-
-        # 5) Distance‐based shaping
-        unvisited = [
-            np.linalg.norm(self.pose[:2] - dock)
-            for i, dock in enumerate(self.docks) if not self._visited[i]
-        ]
-        if unvisited:
-            # negative cost proportional to distance
-            reward += -0.2 * min(unvisited)
-            # bonus for getting closer since last step
-            dist = min(unvisited)
-            delta = self._last_dist_to_goal - dist
-            if delta > 0:
-                reward += 0.2 * delta
-            self._last_dist_to_goal = dist
-
-        # 6) Action & time penalty
-        reward += -0.3 * (abs(v) + abs(omega))
-        reward += -0.05
-
-        # 7) Wall‐proximity penalty via sonar
-        ranges, _, _ = self.sonar.get_readings(
-            self.occ_grid, self.refl_grid, self.pose
-        )
-        min_r = float(np.min(ranges))
-        if min_r < self.wall_thresh:
-            reward -= self.wall_penalty_coeff * (self.wall_thresh - min_r)
-
-        # 8) Collision & termination
-        if collision:
-            reward = self.collision_penalty
-            done = True
+        # ─── 4) Commit pose ────────────────────────────────────────────
+        if collided:
+            # block translation: stay in old_x,old_y, but accept new_th
+            self.pose = np.array([old_x, old_y, new_th], dtype=float)
         else:
-            done = all(self._visited)
+            # free path: move and rotate
+            self.pose = np.array([new_x, new_y, new_th], dtype=float)
 
-        # 9) Record previous action & advance time
-        self.previous_action = v
-        self.time += 1.0
+        # ─── 5) Reward & termination ─────────────────────────────────
+        # dock check
+        d = np.linalg.norm(self.pose[:2] - self.docks[0])
+        if d < self.dock_radius:
+            reward = +1.0
+            done   = True
+        else:
+            reward = -1.0
+            done   = False
 
-        # 10) Build the next observation, updating history if needed
+        # ─── 6) Build next obs ────────────────────────────────────────
         raw = self._get_raw_obs()
         if self.use_history:
             self._history_buffer.append(raw.copy())
@@ -323,8 +310,21 @@ class simpleAUVEnv:
 
         return obs, reward, done, {}
 
-    def render(self):
-        surf = pygame.display.set_mode(self.window_size)
+
+    def render(self, mode='human'):
+        """
+        If mode=='human', draw to the screen as before.
+        If mode=='rgb_array', draw into an offscreen surface and return an H×W×3 array.
+        """
+        # choose the target surface
+        if mode == 'human':
+            surf = pygame.display.set_mode(self.window_size)
+        elif mode == 'rgb_array':
+            # offscreen surface for headless capture
+            surf = pygame.Surface(self.window_size)
+        else:
+            raise ValueError(f"Unsupported render mode: {mode}")
+
         surf.fill((0, 0, 50))
 
         # --- 1) Draw the occupancy map ---
@@ -350,7 +350,7 @@ class simpleAUVEnv:
                 int(self.dock_radius / self.resolution * cw), 2
             )
 
-        # draw AUV
+        # draw the AUV
         x_pix = self.pose[0] / self.resolution * cw
         y_pix = self.pose[1] / self.resolution * ch
         pygame.draw.circle(surf, (0,255,0), (int(x_pix), int(y_pix)), 5)
@@ -395,7 +395,13 @@ class simpleAUVEnv:
             col, rad = ((255,255,0), 3) if hit_mask[i] else ((50,50,50), 2)
             pygame.draw.circle(surf, col, (int(px), int(py)), rad)
 
-        pygame.display.flip()
+        if mode == 'human':
+            pygame.display.flip()
+            return None
+        else:
+            # headless: get RGB array
+            arr = pygame.surfarray.array3d(surf)   # (w, h, 3)
+            return np.transpose(arr, (1, 0, 2))    # (h, w, 3)
 
 
     def get_cartesian_readings(self):

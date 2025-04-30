@@ -38,6 +38,9 @@ class DQNAgent:
                  # ── LiDAR flags ───────────────────────────
                  use_lidar: bool = False,
                  lidar_range: int = 10,
+                 # ── history flags ───────────────────────
+                 use_history: bool = False,
+                 history_length: int = 3,
                  device=None):
         """
         env: your GridDockEnv
@@ -52,10 +55,17 @@ class DQNAgent:
         self.use_lidar   = use_lidar
         self.lidar_range = lidar_range
 
-        # ── dynamically infer the input dimension from the env obs-space ──
-        # env.observation_space.low.shape[0] will be 2 without LiDAR, 6 with it
-        self.input_dim  = int(env.observation_space.low.shape[0])
-        self.output_dim = int(env.action_space.n)
+        # ── store history settings ───────────────────────
+        self.use_history    = use_history
+        self.history_length = history_length
+        
+        # ─── Dynamic input size ─────────────────────────────
+        # sample one reset to see the full obs-length:
+        obs0 = env.reset()
+        self.input_dim  = int(obs0.shape[0])      # now = raw_dim * (history_length+1)
+        self.output_dim = env.action_space.n
+
+        self.output_dim = env.action_space.n
 
         # ── build policy & target nets ───────────────────────
         self.policy_net = DQNNetwork(self.input_dim, hidden_dims, self.output_dim).to(self.device)

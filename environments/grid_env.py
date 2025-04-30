@@ -2,6 +2,8 @@
 
 import numpy as np
 import pygame
+from collections import deque
+
 
 class GridDockEnv:
     def __init__(self,
@@ -10,9 +12,11 @@ class GridDockEnv:
                  cell_size=64,
                  fps=10,
                  obstacle_positions=None,
-                 lidar: bool = False, 
+                 obstacle_count=0,
+                 lidar: bool = False,
                  lidar_range: int = 10,
-                 obstacle_count=0):
+                 use_history: bool = False,
+                 history_length: int = 3):
         """
         Args:
             grid_size:      (width, height) of the grid
@@ -29,6 +33,9 @@ class GridDockEnv:
         self._fps       = fps
         self.use_lidar   = lidar
         self.lidar_range = lidar_range
+        self.use_history     = use_history
+        self.history_length  = history_length
+        self._history_buffer = deque(maxlen=history_length + 1)
 
         # obstacle config
         if obstacle_positions is not None:
@@ -114,44 +121,70 @@ class GridDockEnv:
             self.obstacles = set(choices[:self.obstacle_count])
         else:
             self.obstacles = set()
-
+        
+        # 3) initialize history buffer
+        if self.use_history:
+            obs = self._get_raw_obs()
+            self._history_buffer.clear()
+            for _ in range(self.history_length+1):
+                self._history_buffer.append(obs.copy())
         return self._get_obs()
 
     def step(self, action):
-        # compute candidate new pos
+        """
+        Executes the action, updates agent_pos, obstacles, reward, done,
+        and maintains the history buffer if use_history=True.
+        """
+        # 1) Move agent
         x, y = self.agent_pos
         if   action == 0: y += 1   # up
         elif action == 1: y -= 1   # down
         elif action == 2: x -= 1   # left
         elif action == 3: x += 1   # right
 
-        # check bounds
+        # 2) Bounds check
         if not (0 <= x < self.grid_size[0] and 0 <= y < self.grid_size[1]):
-            x, y = self.agent_pos  # stay in place
+            x, y = self.agent_pos
 
-        # check obstacle
-        if (x,y) in self.obstacles:
-            x, y = self.agent_pos  # blocked by wall
+        # 3) Obstacle check
+        if (x, y) in self.obstacles:
+            x, y = self.agent_pos
 
-        self.agent_pos = np.array((x,y), dtype=int)
+        self.agent_pos = np.array((x, y), dtype=int)
 
-        # compute reward & done
+        # 4) Compute reward & done
         done = np.array_equal(self.agent_pos, self.goal_pos)
         reward = 1.0 if done else -1.0
 
-        return self._get_obs(), reward, done, {}
+        # 5) Get the new “raw” obs (dx,dy + optional LiDAR)
+        raw_obs = self._get_raw_obs()
+
+        # 6) Update history buffer (if enabled)
+        if self.use_history:
+            # append latest raw_obs; deque will drop oldest if full
+            self._history_buffer.append(raw_obs.copy())
+            # build the stacked observation
+            obs = np.concatenate(list(self._history_buffer), axis=0)
+        else:
+            obs = raw_obs
+
+        return obs, reward, done, {}
+
+    def _get_raw_obs(self):
+        """ Returns the basic relative vector (dx,dy) or with LiDAR appended. """
+        basic = list(self.goal_pos - self.agent_pos)
+        if self.use_lidar:
+            basic += self._compute_lidar()
+        return np.array(basic, dtype=int)
 
     def _get_obs(self):
-        # relative dock vector
-        basic = list(self.goal_pos - self.agent_pos)
-        
-        # relative-vector state
-        if not self.use_lidar:
-            return np.array(basic, dtype=int)
-
-        # otherwise include lidar
-        d_up, d_down, d_left, d_right = self._compute_lidar()
-        return np.array(basic + [d_up, d_down, d_left, d_right], dtype=int)
+        if not self.use_history:
+            return self._get_raw_obs()
+        # otherwise flatten the history buffer
+        flat = []
+        for past in self._history_buffer:
+            flat.extend(past.tolist())
+        return np.array(flat, dtype=int)
 
     def render(self, mode='human'):
         if not self._initialized:

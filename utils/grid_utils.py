@@ -7,17 +7,25 @@ import numpy as np
 from matplotlib import animation
 import matplotlib.patches as patches
 from IPython.display import HTML
+from tqdm import tqdm
+
 
 def train_dqn(env, agent, episodes=1000, max_steps=100):
+    """
+    Train a DQN agent with a tqdm progress bar showing episode reward and epsilon.
+    """
     rewards_hist = []
-    for ep in range(episodes):
+
+    # Create a tqdm iterator over the episode indices
+    pbar = tqdm(range(episodes), desc="DQN Training")
+    for ep in pbar:
         state = env.reset()
         total_reward = 0
+
         for t in range(max_steps):
             action = agent.select_action(state)
             next_s, reward, done, _ = env.step(action)
 
-            # you can apply reward shaping here if desired
             agent.store_transition(state, action, reward, next_s, done)
             agent.optimize_model()
 
@@ -32,8 +40,13 @@ def train_dqn(env, agent, episodes=1000, max_steps=100):
         agent.update_epsilon()
         rewards_hist.append(total_reward)
 
-    return rewards_hist
+        # Update the bar’s postfix fields
+        pbar.set_postfix({
+            "Reward": f"{total_reward:.1f}",
+            "ε":      f"{agent.epsilon:.3f}"
+        })
 
+    return rewards_hist
 
 def train_agent(env: GridDockEnv,
                 agent: QLearningAgent,
@@ -69,13 +82,31 @@ def train_agent(env: GridDockEnv,
         agent.save(save_path)
     return rewards_history, eps_history
 
-def plot_rewards(rewards: List[float]):
-    """Plot total reward per episode."""
+def plot_rewards(rewards: List[float], window: int = 20):
+    """
+    Plot total reward per episode, along with a moving-average curve.
+
+    Args:
+        rewards: list of total reward per episode
+        window:  size of the moving-average window (in episodes)
+    """
     plt.figure()
-    plt.plot(rewards)
+    episodes = np.arange(len(rewards))
+
+    # Plot raw rewards lightly
+    plt.plot(episodes, rewards, color='C0', alpha=0.3, label='Raw Reward')
+
+    # Compute moving average
+    if window > 1 and len(rewards) >= window:
+        # 'valid' gives us len(rewards)-window+1 points
+        ma = np.convolve(rewards, np.ones(window)/window, mode='valid')
+        ma_eps = np.arange(window-1, len(rewards))
+        plt.plot(ma_eps, ma, color='C1', label=f'{window}-Episode MA')
+
     plt.xlabel('Episode')
     plt.ylabel('Total Reward')
-    plt.title('Q-Learning: Episode Reward')
+    plt.title('Learning Curve')
+    plt.legend()
     plt.grid(True)
     plt.tight_layout()
     plt.show()
@@ -132,11 +163,11 @@ def plot_environment(env, figsize: tuple = (5,5)):
 def animate_agent_matplotlib(env, agent, max_steps: int = 100, delay: float = 0.1, figsize: tuple = (5,5)):
     """
     Simulate one greedy episode and return an inline HTML5 animation
-    of the agent moving on the grid (no pygame).
+    of the agent moving on the grid, drawing obstacles as well.
 
     Args:
         env: an environment with .reset(), .step(), and attributes:
-             env.grid_size (tuple), env.agent_pos, env.goal_pos.
+             env.grid_size (tuple), env.agent_pos, env.goal_pos, env.obstacles (set of (x,y)).
         agent: any agent with .select_action(obs) and .epsilon attribute.
         max_steps: maximum steps to simulate in case it never reaches the goal.
         delay: seconds between frames.
@@ -148,15 +179,16 @@ def animate_agent_matplotlib(env, agent, max_steps: int = 100, delay: float = 0.
     # 1) simulate trajectory
     agent.epsilon = 0.0
     obs = env.reset()
-    agent_positions = [env.agent_pos.copy()]
-    goal_pos = env.goal_pos.copy()
+    agent_positions = [tuple(env.agent_pos)]
+    goal_pos = tuple(env.goal_pos)
+    obstacles = set(getattr(env, "obstacles", []))
     done = False
     steps = 0
 
     while not done and steps < max_steps:
         action = agent.select_action(obs)
         obs, _, done, _ = env.step(action)
-        agent_positions.append(env.agent_pos.copy())
+        agent_positions.append(tuple(env.agent_pos))
         steps += 1
 
     # 2) set up the plot
@@ -168,12 +200,17 @@ def animate_agent_matplotlib(env, agent, max_steps: int = 100, delay: float = 0.
     ax.set_yticks(range(H))
     ax.grid(True)
 
+    # draw obstacles
+    for (ox, oy) in obstacles:
+        rect = patches.Rectangle((ox - 0.5, oy - 0.5), 1, 1, color='black')
+        ax.add_patch(rect)
+
     # draw goal once
     gx, gy = goal_pos
     goal_patch = patches.Rectangle((gx - 0.5, gy - 0.5), 1, 1, color='green')
     ax.add_patch(goal_patch)
 
-    # draw agent
+    # draw agent (will be updated)
     agent_patch = patches.Circle((agent_positions[0][0], agent_positions[0][1]), 0.3, color='blue')
     ax.add_patch(agent_patch)
 
@@ -191,6 +228,7 @@ def animate_agent_matplotlib(env, agent, max_steps: int = 100, delay: float = 0.
     )
     plt.close(fig)
     return HTML(ani.to_jshtml())
+
 
 def evaluate_agent(env, agent, episodes: int = 100, max_steps: int = 100):
     """

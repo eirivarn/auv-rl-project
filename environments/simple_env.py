@@ -164,6 +164,7 @@ class simpleAUVEnv:
                  death_limit: int = 4,
                  discrete_actions: bool = True
                 ):
+        
         # core settings
         self.grid_size = grid_size
         self.resolution = resolution

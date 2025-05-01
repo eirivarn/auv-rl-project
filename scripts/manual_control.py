@@ -2,33 +2,35 @@
 
 import sys
 import pygame
-from environments.simple_env import simpleAUVEnv
 import numpy as np
+from environments.realistic_env import realisticAUVEnv  # <-- use your realistic env
 
 def main():
-    # 1) Init Pygame
     pygame.init()
 
-    # 2) Create env with ONLY the parameters your new __init__ expects:
-    env = simpleAUVEnv(
+    env = realisticAUVEnv(
+        # --- simpleAUVEnv kwargs ---
         grid_size      = (200, 200),
         resolution     = 0.05,
-        sonar_params   = {
-            'fov'         : np.deg2rad(90),
-            'n_beams'     : 60,
-            'max_range'   : 10.0,
-            'resolution'  : 0.05,
-            'noise_std'   : 0.0,
-            'compute_intensity': False,
-            'debris_rate' : 0,
-            'ghost_prob'  : 0.0
-        },
-        docks          = 1,             # one random dock
+        docks          = 1,
         dock_radius    = 0.5,
         dock_reward    = 1000,
-        use_history    = False,         # or True if you want to test history
+        use_history    = False,
         history_length = 3,
-        window_size    = (1000, 600)
+        window_size    = (1000, 600),
+
+        # --- physics kwargs ---
+        mass           = 1.0,
+        drag_coef      = 0.1,
+        current_params = {
+            'strength': 0.2,
+            'period'  : 30.0,
+            'direction': np.deg2rad(45)
+        },
+        dt             = 0.1,
+
+        # --- this line lets you pass (v,omega) directly ---
+        discrete_actions = False
     )
 
     obs = env.reset()
@@ -36,26 +38,25 @@ def main():
     running = True
 
     while running:
-        # 3) Handle quit
+        # 1) Handle quit
         for e in pygame.event.get():
             if e.type == pygame.QUIT:
                 running = False
 
-        # 4) Keyboard control
+        # 2) Read keys
         keys = pygame.key.get_pressed()
         v     =  0.1 if keys[pygame.K_UP]   else -0.1 if keys[pygame.K_DOWN]  else 0.0
         omega =  0.1 if keys[pygame.K_LEFT] else -0.1 if keys[pygame.K_RIGHT] else 0.0
 
-        # 5) Step the env
+        # 3) Step with continuous commands
         obs, _, done, _ = env.step((v, omega))
         if done:
             obs = env.reset()
 
-        # 6) Render and tick
+        # 4) Render and cap framerate
         env.render()
         clock.tick(30)
 
-    # 7) Clean up
     pygame.quit()
     sys.exit()
 

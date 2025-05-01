@@ -186,6 +186,13 @@ class simpleAUVEnv:
 
         # history buffer
         self.use_history = use_history
+
+
+
+
+
+
+
         self.history_length = history_length
         self._history_buffer = deque(maxlen=history_length+1)
 
@@ -216,15 +223,21 @@ class simpleAUVEnv:
         # actions
         self.turn_penalty_coeff = 0.5
 
+
         self.discrete_actions = discrete_actions
         if self.discrete_actions:
-            self.actions = [(0.3,0.0),
-                            (0.3,0.3),
-                            (0.3,-0.3),
-                            (0.0,0.3),
-                            (0.0,-0.3)]
+            self.actions = [(0.3,0.0),(0.3,0.3),(0.3,-0.3),(0.0,0.3),(0.0,-0.3)]
+
+
+
+
+
+
+
         else:
             self.actions = None
+
+
 
         # docks
         if isinstance(docks, int):
@@ -237,14 +250,29 @@ class simpleAUVEnv:
         self._visited = [False]*len(self.docks)
         self.goal_color = (255,255,0)
 
+
         self.reset()
 
     def _build_maps(self):
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         H,W = self.grid_size
         self.occ_grid = np.zeros((H,W),dtype=np.uint8)
         self.refl_grid = np.full((H,W),0.2)
-        rectangles = [(40,40,10,60),
-        (100,0,20,80),(150,120,50,10),(0,100,60,20),(80,150,10,40)]
+        rectangles = [(40,40,10,60),(100,0,20,80),(150,120,50,10),(0,100,60,20),(80,150,10,40)]
         for cx,cy,w,h in rectangles:
             self.occ_grid[cy:cy+h,cx:cx+w] = 1
             self.refl_grid[cy:cy+h,cx:cx+w] = np.random.uniform(0.5,1.0,size=(h,w))

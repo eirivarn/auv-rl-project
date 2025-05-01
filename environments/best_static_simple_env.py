@@ -31,76 +31,6 @@ class SonarSensor:
         self.ghost_decay = ghost_decay
         self.beam_angles = np.linspace(-fov/2, fov/2, n_beams)
 
-
-
-    def get_readings(self, occ_grid, refl_grid, pose):
-        x, y, heading = pose
-        H, W = occ_grid.shape
-        ranges = np.full(self.n_beams, self.max_range)
-        hit_mask = np.zeros(self.n_beams, dtype=bool)
-        intensities = np.zeros(self.n_beams) if self.compute_intensity else None
-
-        for i, rel_ang in enumerate(self.beam_angles):
-            ang = heading + rel_ang
-            for r in np.arange(0, self.max_range, self.resolution):
-                xi = x + r * math.cos(ang)
-                yi = y + r * math.sin(ang)
-                gi = int(yi / self.resolution)
-                gj = int(xi / self.resolution)
-                if gi < 0 or gi >= H or gj < 0 or gj >= W:
-                    break
-                if occ_grid[gi, gj]:
-                    ranges[i] = r + np.random.normal(0, self.noise_std)
-                    hit_mask[i] = True
-                    if self.compute_intensity:
-                        base = refl_grid[gi, gj]
-                        loss = r**2 if self.spreading_loss and r > 0 else 1.0
-                        intensities[i] = base / loss
-                    break
-        return ranges, intensities, hit_mask
-
-    def get_spurious(self, ranges, intensities, hit_mask):
-        spurious = []
-        for _ in range(np.random.poisson(self.debris_rate)):
-            i = np.random.randint(0, self.n_beams)
-            r = np.random.uniform(0, self.max_range)
-            inten = np.random.uniform(0, 0.1)
-            spurious.append((i, r, inten))
-        if intensities is not None:
-            for i, r0 in enumerate(ranges):
-                if hit_mask[i] and np.random.rand() < self.ghost_prob:
-                    offset = np.random.uniform(0.1, 1.0)
-                    r1 = min(r0 + offset, self.max_range)
-                    inten = intensities[i] * self.ghost_decay
-                    spurious.append((i, r1, inten))
-        return spurious
-
-class SonarSensor:
-    """
-    Simulates a forward-mounted fan-beam sonar sensor with optional intensity,
-    debris, and ghost echoes, ignoring beams that exit the map.
-    """
-    def __init__(self,
-                 fov=np.deg2rad(360), n_beams=20,
-                 max_range=20.0, resolution=0.05,
-                 noise_std=0.00,
-                 compute_intensity=False,
-                 spreading_loss=True,
-                 debris_rate=0,
-                 ghost_prob=0.00,
-                 ghost_decay=0.0):
-        self.fov = fov
-        self.n_beams = n_beams
-        self.max_range = max_range
-        self.resolution = resolution
-        self.noise_std = noise_std
-        self.compute_intensity = compute_intensity
-        self.spreading_loss = spreading_loss
-        self.debris_rate = debris_rate
-        self.ghost_prob = ghost_prob
-        self.ghost_decay = ghost_decay
-        self.beam_angles = np.linspace(-fov/2, fov/2, n_beams)
-
     def get_readings(self, occ_grid, refl_grid, pose):
         x, y, heading = pose
         H, W = occ_grid.shape
@@ -154,52 +84,36 @@ class simpleAUVEnv:
                  use_history: bool = False,
                  history_length: int = 3,
                  window_size=(800, 600),
-                 n_beams: int = 8,
-                 start_mode: str = 'center',
-                 spawn_clearance: float = 1.0,
-                 random_map: bool = False,
-                 map_fill_prob: float = 0.3,
-                 smooth_steps: int = 5,
-                 birth_limit: int = 6,
-                 death_limit: int = 4,
+                 n_beams: int     = 8,
+                 start_mode: str  = 'center',
+                 spawn_clearance: float = 1.0, 
                  discrete_actions: bool = True
                 ):
-        # core settings
+
         self.grid_size = grid_size
         self.resolution = resolution
         self.window_size = window_size
-        self.random_map = random_map
-        # CA parameters
-        self.map_fill_prob = map_fill_prob
-        self.smooth_steps = smooth_steps
-        self.birth_limit = birth_limit
-        self.death_limit = death_limit
-        
+        self._build_maps()
         self.start_mode = start_mode
         self.spawn_clearance = spawn_clearance
 
-        # penalties and shaping
-        self.wall_thresh = 0.5
-        self.wall_penalty_coeff = 2.0
-        self.collision_penalty = -1.0
-        self.progress_coeff = 5.0
 
-        # history buffer
-        self.use_history = use_history
+        # ── WALL / PROXIMITY PENALTY ───────────────────────────
+        self.wall_thresh         = 0.5    # meters
+        self.wall_penalty_coeff  = 2.0
+        self.collision_penalty   = -1.0
+
+        # ── PROGRESS SHAPING ────────────────────────────────────
+        self.progress_coeff      = 5.0
+
+        self.use_history    = use_history
         self.history_length = history_length
-        self._history_buffer = deque(maxlen=history_length+1)
+        # create a buffer to hold (history_length + 1) raw-observations
+        self._history_buffer = deque(maxlen=history_length + 1)
 
-
-        # build occupancy & reflectivity
-        if self.random_map:
-            self._build_random_maps()
-        else:
-            self._build_maps()
-
-        # sonar
         default_sonar = dict(
             fov=np.deg2rad(360),
-            n_beams=n_beams,
+            n_beams=n_beams,                # use fewer beams
             max_range=10.0,
             resolution=resolution,
             noise_std=0.0,
@@ -213,20 +127,26 @@ class simpleAUVEnv:
             params.update(sonar_params)
         self.sonar = SonarSensor(**params)
 
-        # actions
-        self.turn_penalty_coeff = 0.5
+
+        # ── ACTION SPACE ─────────────────────────────────────────────────
+        self.turn_penalty_coeff = 0.5    # reward penalty per rad/s of omega
 
         self.discrete_actions = discrete_actions
         if self.discrete_actions:
-            self.actions = [(0.3,0.0),
-                            (0.3,0.3),
-                            (0.3,-0.3),
-                            (0.0,0.3),
-                            (0.0,-0.3)]
+            # now include forward+turn combos, not just pure rotate
+            self.actions = [
+                ( 0.3,  0.0),  # forward
+                ( 0.3,  0.3),  # forward+left
+                ( 0.3, -0.3),  # forward+right
+                ( 0.0,  0.3),  # pivot left
+                ( 0.0, -0.3),  # pivot right
+            ]
         else:
             self.actions = None
 
-        # docks
+
+
+        # ── DOCKS SETUP ──────────────────────────────────────────────
         if isinstance(docks, int):
             self.docks = [self._sample_random_goal() for _ in range(docks)]
         else:
@@ -234,52 +154,32 @@ class simpleAUVEnv:
 
         self.dock_radius = dock_radius
         self.dock_reward = dock_reward
-        self._visited = [False]*len(self.docks)
-        self.goal_color = (255,255,0)
-
+        # visited flags for each dock
+        self._visited   = [False] * len(self.docks)
+        # color for drawing docks
+        self.goal_color = (255, 255, 0)
         self.reset()
 
     def _build_maps(self):
-        H,W = self.grid_size
-        self.occ_grid = np.zeros((H,W),dtype=np.uint8)
-        self.refl_grid = np.full((H,W),0.2)
-        rectangles = [(40,40,10,60),
-        (100,0,20,80),(150,120,50,10),(0,100,60,20),(80,150,10,40)]
-        for cx,cy,w,h in rectangles:
-            self.occ_grid[cy:cy+h,cx:cx+w] = 1
-            self.refl_grid[cy:cy+h,cx:cx+w] = np.random.uniform(0.5,1.0,size=(h,w))
-
-    def _build_random_maps(self):
-        H,W = self.grid_size
-        grid = (np.random.rand(H,W) < self.map_fill_prob).astype(np.uint8)
-        def count_walls(y,x):
-            total=0
-            for dy in(-1,0,1):
-                for dx in(-1,0,1):
-                    if dy==0 and dx==0: continue
-                    ny, nx = y+dy, x+dx
-                    if 0<=ny<H and 0<=nx<W:
-                        total+=grid[ny,nx]
-                    else: total+=1
-            return total
-        for _ in range(self.smooth_steps):
-            newg=np.zeros_like(grid)
-            for y in range(H):
-                for x in range(W):
-                    walls=count_walls(y,x)
-                    if grid[y,x]==1:
-                        newg[y,x]=1 if walls>=self.death_limit else 0
-                    else:
-                        newg[y,x]=1 if walls>=self.birth_limit else 0
-            grid=newg
-        self.occ_grid=grid
-        self.refl_grid=np.full((H,W),0.2,dtype=np.float32)
+        H, W = self.grid_size
+        self.occ_grid = np.zeros((H, W), dtype=np.uint8)
+        self.refl_grid = np.full((H, W), 0.2)
+        rectangles = [
+            (40, 40, 10, 60),
+            (100, 0, 20, 80),
+            (150, 120, 50, 10),
+            (0, 100, 60, 20),
+            (80, 150, 10, 40)
+        ]
+        for cx, cy, w, h in rectangles:
+            self.occ_grid[cy:cy+h, cx:cx+w] = 1
+            self.refl_grid[cy:cy+h, cx:cx+w] = np.random.uniform(0.5, 1.0, size=(h, w))
 
     def _sample_random_goal(self):
-        H,W=self.grid_size
-        return np.array([np.random.uniform(0,W*self.resolution),
-                         np.random.uniform(0,H*self.resolution)])
-
+        H,W = self.grid_size
+        x = np.random.uniform(0, W*self.resolution)
+        y = np.random.uniform(0, H*self.resolution)
+        return np.array([x,y])
 
     def _get_raw_obs(self):
         # 1) normalized sonar: [0…1]
@@ -309,6 +209,7 @@ class simpleAUVEnv:
             return self._history_buffer[-1].copy()
 
     def reset(self):
+
         H, W = self.grid_size
 
         # 1) Determine spawn: center or random‐but‐clear
@@ -342,9 +243,21 @@ class simpleAUVEnv:
         th0 = 0.0
         self.pose = np.array([x0, y0, th0], dtype=float)
         self._visited = [False]*len(self.docks)
+
+
+
+
         first = self.docks[0]
         self.pose[2] = math.atan2(first[1]-y0, first[0]-x0)
         self._last_dist = np.linalg.norm(self.pose[:2] - first)
+
+
+
+
+
+
+
+
 
         # seed history buffer
         raw0 = self._get_raw_obs()

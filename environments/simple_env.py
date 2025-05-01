@@ -98,9 +98,13 @@ class simpleAUVEnv:
         self._build_maps()
         self.start_mode = start_mode
 
-        self.wall_thresh = 0.5
-        self.wall_penalty_coeff = 2.0
-        self.collision_penalty = -1.0
+        # ── WALL / PROXIMITY PENALTY ───────────────────────────
+        self.wall_thresh         = 0.5    # meters
+        self.wall_penalty_coeff  = 2.0
+        self.collision_penalty   = -1.0
+
+        # ── PROGRESS SHAPING ────────────────────────────────────
+        self.progress_coeff      = 5.0
     
         self.use_history    = use_history
         self.history_length = history_length
@@ -221,13 +225,8 @@ class simpleAUVEnv:
         dx, dy = first - self.pose[:2]
         self.pose[2] = math.atan2(dy, dx)
 
-        # 5) Initialize last‐distance for shaping
-        dists = [
-            np.linalg.norm(self.pose[:2] - dock)
-            for idx, dock in enumerate(self.docks)
-            if not self._visited[idx]
-        ]
-        self._last_dist_to_goal = min(dists) if dists else 0.0
+         # 5) Initialize last‐distance for shaping
+        self._last_dist = np.linalg.norm(self.pose[:2] - self.docks[0])
 
         # 6) Reset internal clock
         self.time = 0.0
@@ -241,16 +240,7 @@ class simpleAUVEnv:
         return self._get_obs()
     
     def step(self, action):
-        """
-        1) Decode the action into (v, ω).
-        2) Compute a candidate new pose.
-        3) Ray‐march along the straight‐line path in small increments
-           to see if you’d clip any occupied cell.
-        4) If so, cancel the translation (but keep your new heading),
-           so you can ‘reverse’ or turn yourself free.
-        5) Apply simple +1/–1 reward (–1 per step, +1 on dock, no end on wall).
-        """
-        # ─── 1) Unpack & clip ──────────────────────────────────────────
+        # ─── 1) Decode action ────────────────────────────────────
         if self.discrete_actions:
             v, omega = self.actions[int(action)]
         else:
@@ -258,20 +248,17 @@ class simpleAUVEnv:
         v     = float(np.clip(v,      -1.0, 1.0))
         omega = float(np.clip(omega, -np.pi/4, np.pi/4))
 
-        # ─── 2) Old pose & proposed new pose ──────────────────────────
+        # ─── 2) Propose new pose ────────────────────────────────
         old_x, old_y, old_th = self.pose
-        new_th = math.atan2(
-            math.sin(old_th + omega),
-            math.cos(old_th + omega)
-        )
+        new_th = math.atan2(math.sin(old_th + omega),
+                             math.cos(old_th + omega))
         new_x  = old_x + v * math.cos(new_th)
         new_y  = old_y + v * math.sin(new_th)
 
-        # ─── 3) Continuous collision check ────────────────────────────
-        # march in small steps along the line from old→new
+        # ─── 3) Continuous collision check ─────────────────────
         dx, dy = new_x - old_x, new_y - old_y
         dist   = math.hypot(dx, dy)
-        n_steps = max(1, int(dist / (self.resolution * 0.3)))  # sample every ~0.3 cell
+        n_steps = max(1, int(dist / (self.resolution * 0.3)))
         collided = False
         for i in range(1, n_steps+1):
             xi = old_x + dx * (i / n_steps)
@@ -282,41 +269,45 @@ class simpleAUVEnv:
                 collided = True
                 break
 
-        # ─── 4) Commit pose ────────────────────────────────────────────
+        # ─── 4) Commit pose ─────────────────────────────────────
         if collided:
-            # block translation: stay in old_x,old_y, but accept new_th
+            # block translation, keep new heading
             self.pose = np.array([old_x, old_y, new_th], dtype=float)
         else:
-            # free path: move and rotate
             self.pose = np.array([new_x, new_y, new_th], dtype=float)
 
-        # ─── 5) Reward & termination ─────────────────────────────────
-        # dock check
+        # ─── 5) Base reward & done ─────────────────────────────
+        # distance to first dock
         d = np.linalg.norm(self.pose[:2] - self.docks[0])
-        if d < self.dock_radius:
-            reward = +1.0
-            done   = True
+        if collided:
+            reward, done = self.collision_penalty, False
         else:
-            reward = -1.0
-            done   = False
+            if d < self.dock_radius:
+                reward, done = +self.dock_reward, True
+            else:
+                reward, done = -1.0,          False
 
-        # ─── 6) Build next obs ────────────────────────────────────────
+        # ─── 6) Proximity shaping ───────────────────────────────
+        raw_ranges, _, _ = self.sonar.get_readings(
+            self.occ_grid, self.refl_grid, self.pose
+        )
+        min_r = raw_ranges.min()
+        if min_r < self.wall_thresh:
+            # stronger penalty the closer you are
+            reward -= self.wall_penalty_coeff * (1 - min_r/self.wall_thresh)
+
+        # ─── 7) Progress shaping ────────────────────────────────
+        delta = self._last_dist - d
+        reward += delta * self.progress_coeff
+        self._last_dist = d
+
+        # ─── 8) Build next observation ─────────────────────────
         raw = self._get_raw_obs()
         if self.use_history:
             self._history_buffer.append(raw.copy())
             obs = np.concatenate(self._history_buffer, axis=0)
         else:
             obs = raw
-
-        raw_ranges, _, _ = self.sonar.get_readings(self.occ_grid,
-                                              self.refl_grid,
-                                              self.pose)
-        
-        min_r = raw_ranges.min()
-        if min_r < self.wall_thresh:
-            # linearly scale penalty: max –wall_penalty_coeff at r=0, 0 at r=wall_thresh
-            prox_pen = - self.wall_penalty_coeff * (1 - min_r/self.wall_thresh)
-            reward += prox_pen
 
         return obs, reward, done, {}
 

@@ -86,10 +86,9 @@ class simpleAUVEnv:
                  use_history: bool = False,
                  history_length: int = 3,
                  window_size=(800, 600),
-                 # ── NEW params ───────────────────────────────────
-                 n_beams: int     = 8,           # compress beams
-                 start_mode: str  = 'center',    # or 'random'
-                 discrete_actions: bool = True   # switch to a small set of actions
+                 n_beams: int     = 8,
+                 start_mode: str  = 'center',
+                 discrete_actions: bool = True
                 ):
                  
         self.grid_size = grid_size
@@ -129,13 +128,17 @@ class simpleAUVEnv:
 
 
         # ── ACTION SPACE ─────────────────────────────────────────────────
+        self.turn_penalty_coeff = 0.1    # reward penalty per rad/s of omega
+
         self.discrete_actions = discrete_actions
         if self.discrete_actions:
+            # now include forward+turn combos, not just pure rotate
             self.actions = [
-                ( 0.3,  0.0),   # forward
-                (-0.3,  0.0),   # back
-                ( 0.0,  0.3),   # turn left
-                ( 0.0, -0.3),   # turn right
+                ( 0.3,  0.0),  # forward
+                ( 0.3,  0.3),  # forward+left
+                ( 0.3, -0.3),  # forward+right
+                ( 0.0,  0.3),  # pivot left
+                ( 0.0, -0.3),  # pivot right
             ]
         else:
             self.actions = None
@@ -231,7 +234,9 @@ class simpleAUVEnv:
         # 6) Reset internal clock
         self.time = 0.0
 
-        # 7) Seed the history buffer with the initial raw observation
+        self._last_dist = np.linalg.norm(self.pose[:2] - self.docks[0])
+
+        # seed history buffer with the first observation
         raw0 = self._get_raw_obs()
         self._history_buffer.clear()
         for _ in range(self.history_length+1):
@@ -240,77 +245,78 @@ class simpleAUVEnv:
         return self._get_obs()
     
     def step(self, action):
-        # ─── 1) Decode action ────────────────────────────────────
-        if self.discrete_actions:
-            v, omega = self.actions[int(action)]
-        else:
-            v, omega = action
-        v     = float(np.clip(v,      -1.0, 1.0))
-        omega = float(np.clip(omega, -np.pi/4, np.pi/4))
+            # ─── 1) Decode & clip ───────────────────────────────────────
+            if self.discrete_actions:
+                v, omega = self.actions[int(action)]
+            else:
+                v, omega = action
+            v     = float(np.clip(v,      -1.0, 1.0))
+            omega = float(np.clip(omega, -np.pi/4, np.pi/4))
 
-        # ─── 2) Propose new pose ────────────────────────────────
-        old_x, old_y, old_th = self.pose
-        new_th = math.atan2(math.sin(old_th + omega),
-                             math.cos(old_th + omega))
-        new_x  = old_x + v * math.cos(new_th)
-        new_y  = old_y + v * math.sin(new_th)
+            # ─── 2) Propose new pose ────────────────────────────────────
+            old_x, old_y, old_th = self.pose
+            new_th = math.atan2(
+                math.sin(old_th + omega),
+                math.cos(old_th + omega)
+            )
+            new_x = old_x + v * math.cos(new_th)
+            new_y = old_y + v * math.sin(new_th)
 
-        # ─── 3) Continuous collision check ─────────────────────
-        dx, dy = new_x - old_x, new_y - old_y
-        dist   = math.hypot(dx, dy)
-        n_steps = max(1, int(dist / (self.resolution * 0.3)))
-        collided = False
-        for i in range(1, n_steps+1):
-            xi = old_x + dx * (i / n_steps)
-            yi = old_y + dy * (i / n_steps)
-            ci = int(np.clip(xi / self.resolution, 0, self.grid_size[1]-1))
-            ri = int(np.clip(yi / self.resolution, 0, self.grid_size[0]-1))
-            if self.occ_grid[ri, ci]:
-                collided = True
-                break
+            # ─── 3) Continuous collision check ──────────────────────────
+            dx, dy  = new_x - old_x, new_y - old_y
+            dist    = math.hypot(dx, dy)
+            n_steps = max(1, int(dist / (self.resolution * 0.3)))
+            collided = False
+            for i in range(1, n_steps+1):
+                xi = old_x + dx * (i / n_steps)
+                yi = old_y + dy * (i / n_steps)
+                ci = int(np.clip(xi / self.resolution, 0, self.grid_size[1]-1))
+                ri = int(np.clip(yi / self.resolution, 0, self.grid_size[0]-1))
+                if self.occ_grid[ri, ci]:
+                    collided = True
+                    break
 
-        # ─── 4) Commit pose ─────────────────────────────────────
-        if collided:
-            # block translation, keep new heading
-            self.pose = np.array([old_x, old_y, new_th], dtype=float)
-        else:
-            self.pose = np.array([new_x, new_y, new_th], dtype=float)
+            # ─── 4) Commit pose ─────────────────────────────────────────
+            if collided:
+                # block translation, keep heading
+                self.pose = np.array([old_x, old_y, new_th], dtype=float)
+            else:
+                self.pose = np.array([new_x, new_y, new_th], dtype=float)
 
-        # ─── 5) Base reward & done ─────────────────────────────
-        # distance to first dock
-        d = np.linalg.norm(self.pose[:2] - self.docks[0])
-        if collided:
-            reward, done = self.collision_penalty, False
-        else:
-            if d < self.dock_radius:
+            # ─── 5) Base reward & done ──────────────────────────────────
+            d = np.linalg.norm(self.pose[:2] - self.docks[0])
+            if collided:
+                reward, done = self.collision_penalty, False
+            elif d < self.dock_radius:
                 reward, done = +self.dock_reward, True
             else:
-                reward, done = -1.0,          False
+                reward, done = -1.0,         False
 
-        # ─── 6) Proximity shaping ───────────────────────────────
-        raw_ranges, _, _ = self.sonar.get_readings(
-            self.occ_grid, self.refl_grid, self.pose
-        )
-        min_r = raw_ranges.min()
-        if min_r < self.wall_thresh:
-            # stronger penalty the closer you are
-            reward -= self.wall_penalty_coeff * (1 - min_r/self.wall_thresh)
+            # ─── 6) Proximity shaping ───────────────────────────────────
+            raw_ranges, _, _ = self.sonar.get_readings(
+                self.occ_grid, self.refl_grid, self.pose
+            )
+            min_r = raw_ranges.min()
+            if min_r < self.wall_thresh:
+                reward -= self.wall_penalty_coeff * (1 - min_r/self.wall_thresh)
 
-        # ─── 7) Progress shaping ────────────────────────────────
-        delta = self._last_dist - d
-        reward += delta * self.progress_coeff
-        self._last_dist = d
+            # ─── 7) Progress shaping ────────────────────────────────────
+            delta = self._last_dist - d
+            reward += delta * self.progress_coeff
+            self._last_dist = d
 
-        # ─── 8) Build next observation ─────────────────────────
-        raw = self._get_raw_obs()
-        if self.use_history:
-            self._history_buffer.append(raw.copy())
-            obs = np.concatenate(self._history_buffer, axis=0)
-        else:
-            obs = raw
+            # ─── 8) Turn penalty ────────────────────────────────────────
+            reward -= self.turn_penalty_coeff * abs(omega)
 
-        return obs, reward, done, {}
+            # ─── 9) Build next obs ──────────────────────────────────────
+            raw = self._get_raw_obs()
+            if self.use_history:
+                self._history_buffer.append(raw.copy())
+                obs = np.concatenate(self._history_buffer, axis=0)
+            else:
+                obs = raw
 
+            return obs, reward, done, {}
 
     def render(self, mode='human'):
         """

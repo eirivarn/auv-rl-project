@@ -18,7 +18,7 @@ class SonarSensor:
                  debris_rate=0,
                  ghost_prob=0.00,
                  ghost_decay=0.0):
-        
+
         self.fov = fov
         self.n_beams = n_beams
         self.max_range = max_range
@@ -30,8 +30,8 @@ class SonarSensor:
         self.ghost_prob = ghost_prob
         self.ghost_decay = ghost_decay
         self.beam_angles = np.linspace(-fov/2, fov/2, n_beams)
-        
-        
+
+
 
     def get_readings(self, occ_grid, refl_grid, pose):
         x, y, heading = pose
@@ -164,7 +164,6 @@ class simpleAUVEnv:
                  death_limit: int = 4,
                  discrete_actions: bool = True
                 ):
-        
         # core settings
         self.grid_size = grid_size
         self.resolution = resolution
@@ -187,8 +186,16 @@ class simpleAUVEnv:
 
         # history buffer
         self.use_history = use_history
+
+
+
+
+
+
+
         self.history_length = history_length
         self._history_buffer = deque(maxlen=history_length+1)
+
 
         # build occupancy & reflectivity
         if self.random_map:
@@ -207,6 +214,7 @@ class simpleAUVEnv:
             debris_rate=0,
             ghost_prob=0.0
         )
+
         params = default_sonar.copy()
         if sonar_params:
             params.update(sonar_params)
@@ -214,25 +222,53 @@ class simpleAUVEnv:
 
         # actions
         self.turn_penalty_coeff = 0.5
+
+
         self.discrete_actions = discrete_actions
         if self.discrete_actions:
             self.actions = [(0.3,0.0),(0.3,0.3),(0.3,-0.3),(0.0,0.3),(0.0,-0.3)]
+
+
+
+
+
+
+
         else:
             self.actions = None
+
+
 
         # docks
         if isinstance(docks, int):
             self.docks = [self._sample_random_goal() for _ in range(docks)]
         else:
             self.docks = docks or [self._sample_random_goal()]
+
         self.dock_radius = dock_radius
         self.dock_reward = dock_reward
         self._visited = [False]*len(self.docks)
         self.goal_color = (255,255,0)
 
+
         self.reset()
 
     def _build_maps(self):
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
         H,W = self.grid_size
         self.occ_grid = np.zeros((H,W),dtype=np.uint8)
         self.refl_grid = np.full((H,W),0.2)
@@ -272,7 +308,7 @@ class simpleAUVEnv:
         return np.array([np.random.uniform(0,W*self.resolution),
                          np.random.uniform(0,H*self.resolution)])
 
-  
+
     def _get_raw_obs(self):
         # 1) normalized sonar: [0…1]
         ranges, _, _ = self.sonar.get_readings(
@@ -299,7 +335,7 @@ class simpleAUVEnv:
             return np.concatenate(self._history_buffer, axis=0)
         else:
             return self._history_buffer[-1].copy()
-    
+
     def reset(self):
         H, W = self.grid_size
 
@@ -345,7 +381,7 @@ class simpleAUVEnv:
             self._history_buffer.append(raw0.copy())
 
         return self._get_obs()
-    
+
     def step(self, action):
             # ─── 1) Decode & clip ───────────────────────────────────────
             if self.discrete_actions:
@@ -520,4 +556,3 @@ class simpleAUVEnv:
         xs = ranges * np.sin(angles)
         local_pts = np.stack((xs, ys), axis=1)
         world_pts = local_pts + self.pose[:2]
-        return local_pts, world_pts, hit_mask

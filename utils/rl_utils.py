@@ -35,18 +35,28 @@ def train_dqn(env, agent, episodes=500, max_steps=200):
 def evaluate_agent(env, agent, episodes=100, max_steps=200):
     agent.epsilon = 0.0
     successes, steps = 0, []
+
     for _ in range(episodes):
         state = env.reset()
         done, t = False, 0
+        final_reward = None
+
         while not done and t < max_steps:
+            # select_action returns an int (the action index)
             idx = agent.select_action(state)
-            # pass index for discrete; step() will map it internally
-            state, _, done, _ = env.step(idx)
+            state, reward, done, _ = env.step(idx)
+            final_reward = reward
             t += 1
-        if done:
+
+        # only count it if the terminal reward was positive (dock reached)
+        if final_reward is not None and final_reward > 0:
             successes += 1
             steps.append(t)
-    return successes/episodes, np.mean(steps) if steps else None
+
+    success_rate = successes / episodes
+    avg_steps   = np.mean(steps) if steps else None
+    return success_rate, avg_steps
+
 
 def plot_rewards(rewards, window=10):
     episodes = np.arange(len(rewards))
@@ -61,12 +71,6 @@ def plot_rewards(rewards, window=10):
     plt.grid(True)
     plt.show()
 
-
-import cv2
-import numpy as np
-import pygame
-import sys
-from tqdm import trange
 
 def record_pygame_robust(env, agent, out_path='auv.avi', max_steps=200, fps=30):
     """
@@ -142,8 +146,3 @@ def record_headless(env, agent, out_path='auv.gif', max_steps=200, fps=10):
     # write GIF
     imageio.mimsave(out_path, frames, fps=fps)
     print(f"Headless recording saved to {out_path}")
-
-# Example usage:
-# record_pygame_robust(env, agent, out_path='auv.avi')
-# or
-# record_headless(env, agent, out_path='auv.gif')

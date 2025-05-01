@@ -160,7 +160,6 @@ class DQNAgent:
             "state_dict": self.policy_net.state_dict(),
             "hidden_dims": self.policy_net.net[0].out_features,  # or store your config explicitly
             "batch_size": self.batch_size,
-            # … add anything else you need …
         }
         if extra:
             ckpt.update(extra)

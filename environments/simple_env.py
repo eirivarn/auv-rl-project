@@ -88,6 +88,7 @@ class simpleAUVEnv:
                  window_size=(800, 600),
                  n_beams: int     = 8,
                  start_mode: str  = 'center',
+                 spawn_clearance: float = 1.0, 
                  discrete_actions: bool = True
                 ):
                  
@@ -96,6 +97,8 @@ class simpleAUVEnv:
         self.window_size = window_size
         self._build_maps()
         self.start_mode = start_mode
+        self.spawn_clearance = spawn_clearance
+
 
         # ── WALL / PROXIMITY PENALTY ───────────────────────────
         self.wall_thresh         = 0.5    # meters
@@ -208,37 +211,44 @@ class simpleAUVEnv:
             return self._history_buffer[-1].copy()
     
     def reset(self):
-        # 1) Place AUV at map center
         H, W = self.grid_size
+
+        # 1) Determine spawn: center or random‐but‐clear
         if self.start_mode == 'center':
             x0 = (W/2) * self.resolution
             y0 = (H/2) * self.resolution
         else:
-            # pick a random free grid cell
-            frees = np.argwhere(self.occ_grid==0)
-            cy, cx = frees[np.random.randint(len(frees))]
-            x0 = (cx + 0.5) * self.resolution
-            y0 = (cy + 0.5) * self.resolution
+            # convert clearance to grid cells
+            c = int(self.spawn_clearance / self.resolution)
+            frees = np.argwhere(self.occ_grid == 0)
+            # filter to only those free cells whose neighbourhood
+            # of radius c contains no occupied cell
+            good = []
+            for (ry, rx) in frees:
+                y0min = max(0, ry - c)
+                y0max = min(H, ry + c + 1)
+                x0min = max(0, rx - c)
+                x0max = min(W, rx + c + 1)
+                if not self.occ_grid[y0min:y0max, x0min:x0max].any():
+                    good.append((ry, rx))
+            if len(good):
+                ry, rx = good[np.random.randint(len(good))]
+                x0 = (rx + 0.5) * self.resolution
+                y0 = (ry + 0.5) * self.resolution
+            else:
+                # fallback to center if no clear spot found
+                x0 = (W/2) * self.resolution
+                y0 = (H/2) * self.resolution
+
+        # 2) Set heading, flags, history, etc. (rest unchanged)
         th0 = 0.0
         self.pose = np.array([x0, y0, th0], dtype=float)
-
-        # 3) Clear visited flags
-        self._visited = [False] * len(self.docks)
-
-        # 4) Point AUV toward first dock
+        self._visited = [False]*len(self.docks)
         first = self.docks[0]
-        dx, dy = first - self.pose[:2]
-        self.pose[2] = math.atan2(dy, dx)
+        self.pose[2] = math.atan2(first[1]-y0, first[0]-x0)
+        self._last_dist = np.linalg.norm(self.pose[:2] - first)
 
-         # 5) Initialize last‐distance for shaping
-        self._last_dist = np.linalg.norm(self.pose[:2] - self.docks[0])
-
-        # 6) Reset internal clock
-        self.time = 0.0
-
-        self._last_dist = np.linalg.norm(self.pose[:2] - self.docks[0])
-
-        # seed history buffer with the first observation
+        # seed history buffer
         raw0 = self._get_raw_obs()
         self._history_buffer.clear()
         for _ in range(self.history_length+1):

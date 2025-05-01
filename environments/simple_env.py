@@ -128,7 +128,7 @@ class simpleAUVEnv:
 
 
         # ── ACTION SPACE ─────────────────────────────────────────────────
-        self.turn_penalty_coeff = 0.1    # reward penalty per rad/s of omega
+        self.turn_penalty_coeff = 0.5    # reward penalty per rad/s of omega
 
         self.discrete_actions = discrete_actions
         if self.discrete_actions:
@@ -142,6 +142,8 @@ class simpleAUVEnv:
             ]
         else:
             self.actions = None
+        
+       
 
         # ── DOCKS SETUP ──────────────────────────────────────────────
         if isinstance(docks, int):

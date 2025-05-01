@@ -308,6 +308,16 @@ class simpleAUVEnv:
         else:
             obs = raw
 
+        raw_ranges, _, _ = self.sonar.get_readings(self.occ_grid,
+                                              self.refl_grid,
+                                              self.pose)
+        
+        min_r = raw_ranges.min()
+        if min_r < self.wall_thresh:
+            # linearly scale penalty: max –wall_penalty_coeff at r=0, 0 at r=wall_thresh
+            prox_pen = - self.wall_penalty_coeff * (1 - min_r/self.wall_thresh)
+            reward += prox_pen
+
         return obs, reward, done, {}
 
 

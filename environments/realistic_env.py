@@ -49,6 +49,8 @@ class realisticAUVEnv(simpleAUVEnv):
                 ( 0.0,  0.0,  0.3),  # pivot left
                 ( 0.0,  0.0, -0.3),  # pivot right
             ]
+                # ( 0.0,  0.0,  0.3),  # pivot left
+                # ( 0.0,  0.0, -0.3),  # pivot right
             self.action_space = spaces.Discrete(len(self.actions))
         else:
             # continuous 3-DoF: (forward, lateral, yaw)

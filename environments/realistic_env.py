@@ -14,11 +14,18 @@ class realisticAUVEnv(simpleAUVEnv):
         drag_coef: float = 0.1,
         current_params: dict = None,
         dt: float = 0.1,
-        use_continuous_reward: bool = False,
-        step_penalty: float       = -1.0,
-        slow_step_penalty: float  = -0.01,
-        action_penalty_coeff:float= 0.1,
-        progress_coeff: float      = 5.0, 
+        use_continuous_reward=False,
+        use_drag: bool = False,
+        use_inertia: bool   = False,
+        step_penalty=-1.0,
+        slow_step_penalty=0.01,        
+        action_penalty_coeff=0.1,
+        progress_coeff=5.0,
+        collision_penalty=-5.0,
+        turn_penalty_coeff=0.05,
+        v_limit=0.3,
+        lat_limit=0.3,
+        omega_limit= np.pi / 16,
         **kwargs
     ):
         # predeclare dynamics state
@@ -28,7 +35,19 @@ class realisticAUVEnv(simpleAUVEnv):
         # initialize base env (builds maps, sets pose, calls reset)
         super().__init__(**kwargs)
 
+         # ─── reward-shaping parameters (unconditionally defined) ─────────────────
+        self.use_continuous_reward   = use_continuous_reward
+        self.step_penalty            = step_penalty
+        self.slow_step_penalty       = slow_step_penalty
+        self.action_penalty_coeff    = action_penalty_coeff
+        self.progress_coeff          = progress_coeff
+        self.collision_penalty       = collision_penalty
+        self.turn_penalty_coeff      = turn_penalty_coeff
+        # ─────────────────────────────────────────────────────────────────────────
+
         # physics parameters
+        self.use_drag  = use_drag
+        self.use_inertia = use_inertia
         self.mass      = mass
         self.drag_coef = drag_coef
         self.dt        = dt
@@ -43,7 +62,6 @@ class realisticAUVEnv(simpleAUVEnv):
             self.current_enabled = False
 
         # action setup: discrete strafing or continuous
-        self.turn_penalty_coeff = 0.5
         if self.discrete_actions:
             self.actions = [
                 ( 0.5,  0.0,  0.0),  # forward
@@ -57,11 +75,11 @@ class realisticAUVEnv(simpleAUVEnv):
         else:
             # ─── New: Continuous 3-DoF bounds ──────────────────────────
             # forward speed limit (m/s)
-            self.v_limit     = 0.05
+            self.v_limit     = v_limit
             # lateral (strafe) speed limit (m/s)
-            self.lat_limit   = 0.05
+            self.lat_limit   = lat_limit
             # yaw rate limit (rad/s)
-            self.omega_limit = np.pi / 16
+            self.omega_limit = omega_limit
 
             low = np.array(
                 [-self.v_limit, -self.lat_limit, -self.omega_limit],
@@ -73,16 +91,6 @@ class realisticAUVEnv(simpleAUVEnv):
             )
             self.action_space = spaces.Box(low, high, dtype=np.float32)
             self.actions = None
-
-            # — flag to choose reward regime —
-            self.use_continuous_reward = use_continuous_reward
-            # — parameters for both schemes —
-            self.step_penalty        = step_penalty
-            self.slow_step_penalty   = slow_step_penalty
-            self.action_penalty_coeff= action_penalty_coeff
-            self.progress_coeff      = progress_coeff
-            self.collision_penalty   = -10.0
-
             self._last_dist = None
 
     def reset(self):
@@ -97,7 +105,9 @@ class realisticAUVEnv(simpleAUVEnv):
         self.vel[:] = 0.0
         self.time   = 0.0
 
+         # ─── initialize last-distance for progress shaping ──────────
         self._last_dist = np.linalg.norm(self.pose[:2] - self.docks[0])
+
         return obs
 
 
@@ -113,37 +123,51 @@ class realisticAUVEnv(simpleAUVEnv):
                 raise ValueError(f"Invalid action shape: {action}; expected length 3")
             v_cmd, lat_cmd, omega_cmd = arr.tolist()
 
-        # Clip to your desired limits (example limits here)
-        v_limit     = 0.05             # max forward/back speed
-        lat_limit   = 0.05              # max lateral (strafe) speed
-        omega_limit = np.pi / 8        # max yaw rate
-
-        v_cmd     = float(np.clip(v_cmd,   -v_limit,   v_limit))
-        lat_cmd   = float(np.clip(lat_cmd, -lat_limit, lat_limit))
-        omega_cmd = float(np.clip(omega_cmd, -omega_limit, omega_limit))
+        # Clip to the limits you set in __init__
+        v_cmd     = float(np.clip(v_cmd,   -self.v_limit,   self.v_limit))
+        lat_cmd   = float(np.clip(lat_cmd, -self.lat_limit, self.lat_limit))
+        omega_cmd = float(np.clip(omega_cmd, -self.omega_limit, self.omega_limit))
 
         old_x, old_y, old_th = self.pose
 
         # compute current
+        current = np.zeros(2)
         if self.current_enabled:
             mag     = self.cur_strength * math.sin(2*math.pi * self.time / self.cur_period)
-            current = mag * np.array([math.cos(self.cur_direction), math.sin(self.cur_direction)])
-        else:
-            current = np.zeros(2)
+            current = mag * np.array([math.cos(self.cur_direction),
+                                    math.sin(self.cur_direction)])
 
-        # thrust and drag
-        F_body  = np.array([v_cmd, lat_cmd])
-        R       = np.array([[math.cos(old_th), -math.sin(old_th)], [math.sin(old_th), math.cos(old_th)]])
+        # thrust in body frame → world frame
+        F_body   = np.array([v_cmd, lat_cmd])
+        R        = np.array([[math.cos(old_th), -math.sin(old_th)],
+                            [math.sin(old_th),  math.cos(old_th)]])
         F_thrust = R.dot(F_body)
-        rel_v   = self.vel - current
-        F_drag  = -self.drag_coef * rel_v
 
-        # integrate dynamics
-        acc      = (F_thrust + F_drag) / self.mass
-        self.vel += acc * self.dt
-        new_x    = old_x + self.vel[0] * self.dt
-        new_y    = old_y + self.vel[1] * self.dt
-        new_th   = math.atan2(math.sin(old_th + omega_cmd * self.dt), math.cos(old_th + omega_cmd * self.dt))
+        # drag
+        rel_v = self.vel - current
+        F_drag = -self.drag_coef * rel_v if self.use_drag else np.zeros(2)
+
+        if self.use_inertia:
+            # Newtonian integration
+            acc      = (F_thrust + F_drag) / self.mass
+            self.vel += acc * self.dt
+            dx = self.vel[0] * self.dt
+            dy = self.vel[1] * self.dt
+        else:
+            # kinematic: no inertia, no drag, no currents
+            # instantaneous velocity = thrust
+            dx = F_thrust[0] * self.dt
+            dy = F_thrust[1] * self.dt
+            self.vel = F_thrust.copy()  # if you still want to track it
+
+        # heading update (same in both modes)
+        new_th = math.atan2(
+            math.sin(old_th + omega_cmd * self.dt),
+            math.cos(old_th + omega_cmd * self.dt)
+        )
+
+        new_x = old_x + dx
+        new_y = old_y + dy
 
         # collision & bounds check
         dx, dy = new_x - old_x, new_y - old_y
@@ -159,9 +183,6 @@ class realisticAUVEnv(simpleAUVEnv):
                 break
 
         oob = not (0 <= new_x <= self.grid_size[1]*self.resolution and 0 <= new_y <= self.grid_size[0]*self.resolution)
-
-        # collision penalty
-        reward = self.collision_penalty if collided else 0.0
 
         # committing pose: block through walls
         if collided or oob:
@@ -179,7 +200,7 @@ class realisticAUVEnv(simpleAUVEnv):
 
         # 2) base reward + done flag
         done = False
-        if self.reward_mode == "discrete":
+        if not self.use_continuous_reward:
             # exactly your old scheme
             if collided:
                 reward = self.collision_penalty

@@ -10,21 +10,10 @@ from tqdm import trange
 def train_td3(env,
               agent,
               episodes   = 500,
-              max_steps  = 200,
-              reward_mode="discrete"):
-    """
-    Train a TD3 agent, optionally switching the env.reward_mode
-    between 'discrete' and 'continuous' before you start.
-    """
-    # Tell the env which reward‐scheme to use
-    env.reward_mode = reward_mode
-
-    # If you’re in continuous mode you probably want more steps
-    if reward_mode == "continuous":
-        max_steps = max_steps * 5  # e.g. allow 5× longer episodes
+              max_steps  = 200):
 
     rewards_hist = []
-    pbar = tqdm(range(episodes), desc=f"TD3 ({reward_mode})")
+    pbar = tqdm(range(episodes), desc=f"TD3")
     for ep in pbar:
         state = env.reset()
         total_reward = 0.0
@@ -48,7 +37,7 @@ def train_td3(env,
                 break
 
         rewards_hist.append(total_reward)
-        pbar.set_postfix({"Rew": f"{total_reward:.2f}"})
+        pbar.set_postfix({"Reward": f"{total_reward:.2f}"})
 
     return rewards_hist
 

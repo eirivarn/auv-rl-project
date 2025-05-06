@@ -126,22 +126,33 @@ class realisticAUVEnv(simpleAUVEnv):
 
 
     def reset(self):
-        # 0) re-sample a new dock (preserve the number of docks)
+        # 0) Re-sample a new dock (preserve the number of docks)
         num = len(self.docks)
-        self.docks = [ self._sample_random_goal() for _ in range(num) ]
+        self.docks = [self._sample_random_goal() for _ in range(num)]
 
-        # 1) now call the parent reset() to place AUV, point at the new dock, etc.
-        obs = super().reset()
+        # 1) Loop until the agent is spawned outside a wall
+        for _ in range(50):  # avoid infinite loops
+            obs = super().reset()
 
-        # 2) zero out your velocity/time
+            # Check if current position is valid (i.e., not inside wall)
+            grid_x = int(self.pose[0] / self.resolution)
+            grid_y = int(self.pose[1] / self.resolution)
+            if self.occ_grid[grid_y, grid_x] == 0:
+                break  # valid spawn
+            else:
+                print("⚠️  Spawned in a wall, retrying...")
+
+        else:
+            raise RuntimeError("❌ Failed to find a valid spawn location after 50 attempts.")
+
+        # 2) Zero out velocity and time
         self.vel[:] = 0.0
-        self.time   = 0.0
+        self.time = 0.0
 
-         # ─── initialize last-distance for progress shaping ──────────
+        # 3) Initialize last distance for progress shaping
         self._last_dist = np.linalg.norm(self.pose[:2] - self.docks[0])
 
         return obs
-
 
     def step(self, action):
         # ─── Decode & Clip ───────────────────────────────────────────
@@ -161,6 +172,33 @@ class realisticAUVEnv(simpleAUVEnv):
         omega_cmd = float(np.clip(omega_cmd, -self.omega_limit, self.omega_limit))
 
         old_x, old_y, old_th = self.pose
+
+        # Emergency check: is the agent currently inside a wall?
+        grid_x = int(old_x / self.resolution)
+        grid_y = int(old_y / self.resolution)
+        if self.occ_grid[grid_y, grid_x]:
+            print("🚨 Agent is inside a wall! Attempting escape...")
+
+            # Attempt backup along current heading
+            escape_dx = -0.1 * math.cos(old_th)
+            escape_dy = -0.1 * math.sin(old_th)
+            candidate_x = old_x + escape_dx
+            candidate_y = old_y + escape_dy
+            gx = int(candidate_x / self.resolution)
+            gy = int(candidate_y / self.resolution)
+
+            # If that move leads to a free cell, commit it
+            if 0 <= gx < self.grid_size[1] and 0 <= gy < self.grid_size[0] and not self.occ_grid[gy, gx]:
+                self.pose[0] = candidate_x
+                self.pose[1] = candidate_y
+                print("✅ Escaped wall by backing up.")
+            else:
+                # Random nudge if backup is blocked
+                angle = np.random.uniform(0, 2 * np.pi)
+                self.pose[0] += 0.05 * math.cos(angle)
+                self.pose[1] += 0.05 * math.sin(angle)
+                print("🌀 Wall escape via random nudge.")
+
 
         # compute current
         current = np.zeros(2)

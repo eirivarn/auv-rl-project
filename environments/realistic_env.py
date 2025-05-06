@@ -130,20 +130,7 @@ class realisticAUVEnv(simpleAUVEnv):
         num = len(self.docks)
         self.docks = [self._sample_random_goal() for _ in range(num)]
 
-        # 1) Loop until the agent is spawned outside a wall
-        for _ in range(50):  # avoid infinite loops
-            obs = super().reset()
-
-            # Check if current position is valid (i.e., not inside wall)
-            grid_x = int(self.pose[0] / self.resolution)
-            grid_y = int(self.pose[1] / self.resolution)
-            if self.occ_grid[grid_y, grid_x] == 0:
-                break  # valid spawn
-            else:
-                print("⚠️  Spawned in a wall, retrying...")
-
-        else:
-            raise RuntimeError("❌ Failed to find a valid spawn location after 50 attempts.")
+        obs = super().reset()
 
         # 2) Zero out velocity and time
         self.vel[:] = 0.0

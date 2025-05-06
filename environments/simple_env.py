@@ -162,8 +162,13 @@ class simpleAUVEnv:
                  smooth_steps: int = 5,
                  birth_limit: int = 6,
                  death_limit: int = 4,
-                 discrete_actions: bool = True
-                ):
+                 discrete_actions: bool = True,
+                 wall_thresh: float = 0.5,
+                 wall_penalty_coeff: float = 2.0,
+                 collision_penalty: float = -1.0,
+                 progress_coeff: float = 5.0):
+            
+    
         # core settings
         self.grid_size = grid_size
         self.resolution = resolution
@@ -179,10 +184,10 @@ class simpleAUVEnv:
         self.spawn_clearance = spawn_clearance
 
         # penalties and shaping
-        self.wall_thresh = 0.5
-        self.wall_penalty_coeff = 2.0
-        self.collision_penalty = -1.0
-        self.progress_coeff = 5.0
+        self.wall_thresh = wall_thresh
+        self.wall_penalty_coeff = wall_penalty_coeff
+        self.collision_penalty = collision_penalty
+        self.progress_coeff = progress_coeff
 
         # history buffer
         self.use_history = use_history

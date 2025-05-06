@@ -149,7 +149,7 @@ class simpleAUVEnv:
                  resolution=0.05,
                  sonar_params=None,
                  docks=None,
-                 dock_radius=0.2,
+                 dock_radius=0.5,
                  dock_reward=1.0,
                  use_history: bool = False,
                  history_length: int = 3,

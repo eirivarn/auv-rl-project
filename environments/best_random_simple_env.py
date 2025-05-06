@@ -2,7 +2,7 @@ import numpy as np
 import pygame
 import math
 from collections import deque
-
+from gym import spaces
 
 class SonarSensor:
     """
@@ -30,8 +30,6 @@ class SonarSensor:
         self.ghost_prob = ghost_prob
         self.ghost_decay = ghost_decay
         self.beam_angles = np.linspace(-fov/2, fov/2, n_beams)
-
-
 
     def get_readings(self, occ_grid, refl_grid, pose):
         x, y, heading = pose
@@ -186,16 +184,8 @@ class simpleAUVEnv:
 
         # history buffer
         self.use_history = use_history
-
-
-
-
-
-
-
         self.history_length = history_length
         self._history_buffer = deque(maxlen=history_length+1)
-
 
         # build occupancy & reflectivity
         if self.random_map:
@@ -226,18 +216,26 @@ class simpleAUVEnv:
 
         self.discrete_actions = discrete_actions
         if self.discrete_actions:
-            self.actions = [(0.3,0.0),(0.3,0.3),(0.3,-0.3),(0.0,0.3),(0.0,-0.3)]
-
-
-
-
-
-
-
+            self.actions = [(0.3,0.0),
+                            (0.3,0.3),
+                            (0.3,-0.3),
+                            (0.0,0.3),
+                            (0.0,-0.3)]
         else:
+            # continuous forward velocity ∈ [–1,1], yaw rate ∈ [–π/4, π/4]
             self.actions = None
+            low  = np.array([-1.0, -np.pi/4], dtype=np.float32)
+            high = np.array([ 1.0,  np.pi/4], dtype=np.float32)
+            self.action_space = spaces.Box(low, high, dtype=np.float32)
 
-
+        # now that action_space is set, build an example obs to infer its shape
+        example = self.reset()
+        self.observation_space = spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=example.shape,
+            dtype=np.float32
+        )
 
         # docks
         if isinstance(docks, int):
@@ -254,21 +252,6 @@ class simpleAUVEnv:
         self.reset()
 
     def _build_maps(self):
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         H,W = self.grid_size
         self.occ_grid = np.zeros((H,W),dtype=np.uint8)
         self.refl_grid = np.full((H,W),0.2)

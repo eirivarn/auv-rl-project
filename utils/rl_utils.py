@@ -7,6 +7,51 @@ import cv2
 import pygame
 from tqdm import trange
 
+def train_td3(env,
+              agent,
+              episodes   = 500,
+              max_steps  = 200,
+              reward_mode="discrete"):
+    """
+    Train a TD3 agent, optionally switching the env.reward_mode
+    between 'discrete' and 'continuous' before you start.
+    """
+    # Tell the env which reward‐scheme to use
+    env.reward_mode = reward_mode
+
+    # If you’re in continuous mode you probably want more steps
+    if reward_mode == "continuous":
+        max_steps = max_steps * 5  # e.g. allow 5× longer episodes
+
+    rewards_hist = []
+    pbar = tqdm(range(episodes), desc=f"TD3 ({reward_mode})")
+    for ep in pbar:
+        state = env.reset()
+        total_reward = 0.0
+        done = False
+
+        for t in range(max_steps):
+            raw_action = agent.select_action(state)
+            # convert np.ndarray → tuple for step()
+            if isinstance(raw_action, np.ndarray):
+                action = tuple(raw_action.tolist())
+            else:
+                action = raw_action
+
+            next_s, reward, done, _ = env.step(action)
+            agent.store_transition(state, action, reward, next_s, done)
+            agent.train_step()
+
+            state = next_s
+            total_reward += reward
+            if done:
+                break
+
+        rewards_hist.append(total_reward)
+        pbar.set_postfix({"Rew": f"{total_reward:.2f}"})
+
+    return rewards_hist
+
 def train_dqn(env, agent, episodes=500, max_steps=200):
     rewards_hist = []
     pbar = tqdm(range(episodes), desc="DQN Training")
@@ -33,7 +78,10 @@ def train_dqn(env, agent, episodes=500, max_steps=200):
     return rewards_hist
 
 def evaluate_agent(env, agent, episodes=100, max_steps=200):
-    agent.epsilon = 0.0
+    # only relevant for ε‐greedy methods
+    if hasattr(agent, "epsilon"):
+        agent.epsilon = 0.0
+
     successes, steps = 0, []
 
     for _ in range(episodes):
@@ -42,13 +90,23 @@ def evaluate_agent(env, agent, episodes=100, max_steps=200):
         final_reward = None
 
         while not done and t < max_steps:
-            # select_action returns an int (the action index)
-            idx = agent.select_action(state)
-            state, reward, done, _ = env.step(idx)
+            raw_action = agent.select_action(state)
+
+            # ──────────────────────────────────────────────────────────────────────
+            # convert any array‐like action into a tuple for your env.step()
+            # ──────────────────────────────────────────────────────────────────────
+            if isinstance(raw_action, np.ndarray):
+                # e.g. array([x,y,z]) → (x,y,z)
+                action = tuple(raw_action.tolist())
+            else:
+                action = raw_action
+            # ──────────────────────────────────────────────────────────────────────
+
+            state, reward, done, _ = env.step(action)
             final_reward = reward
             t += 1
 
-        # only count it if the terminal reward was positive (dock reached)
+        # only count as success if terminal reward was positive
         if final_reward is not None and final_reward > 0:
             successes += 1
             steps.append(t)
@@ -56,7 +114,6 @@ def evaluate_agent(env, agent, episodes=100, max_steps=200):
     success_rate = successes / episodes
     avg_steps   = np.mean(steps) if steps else None
     return success_rate, avg_steps
-
 
 def plot_rewards(rewards, window=10):
     episodes = np.arange(len(rewards))
@@ -127,22 +184,38 @@ def record_pygame_robust(env, agent, out_path='auv.avi', max_steps=200, fps=30):
 
 def record_headless(env, agent, out_path='auv.gif', max_steps=200, fps=10):
     """
-    Simpler: record frames via env.render(mode='rgb_array') and save a GIF.
+    Record an episode via env.render(mode='rgb_array') and save as a GIF.
+    Works with both discrete (DQN) and continuous (TD3/PPO) agents.
     """
-    import imageio
+
     frames = []
-    agent.epsilon = 0.0
+
+    # turn off exploration if applicable
+    if hasattr(agent, "epsilon"):
+        agent.epsilon = 0.0
+
     obs = env.reset()
     done = False
     t = 0
+
     while not done and t < max_steps:
-        # render offscreen
+        # 1) capture frame
         frame = env.render(mode='rgb_array')
         frames.append(frame)
-        idx = agent.select_action(obs)
-        obs, _, done, _ = env.step(idx)
+
+        # 2) get action
+        raw_action = agent.select_action(obs)
+
+        # 3) convert any array‐like to tuple for env.step()
+        if isinstance(raw_action, np.ndarray):
+            action = tuple(raw_action.tolist())
+        else:
+            action = raw_action
+
+        # 4) step environment
+        obs, _, done, _ = env.step(action)
         t += 1
 
-    # write GIF
+    # save as GIF
     imageio.mimsave(out_path, frames, fps=fps)
     print(f"Headless recording saved to {out_path}")

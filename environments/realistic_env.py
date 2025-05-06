@@ -3,6 +3,36 @@ import math
 from environments.simple_env import simpleAUVEnv
 from gym import spaces
 
+def generate_random_map(grid_size, fill_prob=0.3, smooth_steps=5, birth_limit=6, death_limit=4):
+    H, W = grid_size
+    grid = (np.random.rand(H, W) < fill_prob).astype(np.uint8)
+
+    def count_walls(y, x):
+        total = 0
+        for dy in (-1, 0, 1):
+            for dx in (-1, 0, 1):
+                if dy == 0 and dx == 0:
+                    continue
+                ny, nx = y + dy, x + dx
+                if 0 <= ny < H and 0 <= nx < W:
+                    total += grid[ny, nx]
+                else:
+                    total += 1
+        return total
+
+    for _ in range(smooth_steps):
+        new_grid = np.zeros_like(grid)
+        for y in range(H):
+            for x in range(W):
+                walls = count_walls(y, x)
+                if grid[y, x] == 1:
+                    new_grid[y, x] = 1 if walls >= death_limit else 0
+                else:
+                    new_grid[y, x] = 1 if walls >= birth_limit else 0
+        grid = new_grid
+
+    return grid
+
 class realisticAUVEnv(simpleAUVEnv):
     """
     Extends simpleAUVEnv by adding simple Newtonian dynamics, drag, and ocean currents,
@@ -28,14 +58,23 @@ class realisticAUVEnv(simpleAUVEnv):
         omega_limit= np.pi / 16,
         **kwargs
     ):
-        # predeclare dynamics state
         self.vel  = np.zeros(2, dtype=float)
         self.time = 0.0
 
-        # initialize base env (builds maps, sets pose, calls reset)
+        # Extract map-related kwargs (remove them before calling super())
+        random_map     = kwargs.pop("random_map", False)
+        map_fill_prob  = kwargs.pop("map_fill_prob", 0.3)
+        smooth_steps   = kwargs.pop("smooth_steps", 5)
+        birth_limit    = kwargs.pop("birth_limit", 6)
+        death_limit    = kwargs.pop("death_limit", 4)
+        grid_size      = kwargs.get("grid_size", (200, 200))
+
         super().__init__(**kwargs)
 
-         # ─── reward-shaping parameters (unconditionally defined) ─────────────────
+        if random_map:
+            self.occ_grid = generate_random_map(grid_size, map_fill_prob, smooth_steps, birth_limit, death_limit)
+            self.refl_grid = np.full(grid_size, 0.2, dtype=np.float32)
+
         self.use_continuous_reward   = use_continuous_reward
         self.step_penalty            = step_penalty
         self.slow_step_penalty       = slow_step_penalty
@@ -43,16 +82,13 @@ class realisticAUVEnv(simpleAUVEnv):
         self.progress_coeff          = progress_coeff
         self.collision_penalty       = collision_penalty
         self.turn_penalty_coeff      = turn_penalty_coeff
-        # ─────────────────────────────────────────────────────────────────────────
 
-        # physics parameters
         self.use_drag  = use_drag
         self.use_inertia = use_inertia
         self.mass      = mass
         self.drag_coef = drag_coef
         self.dt        = dt
 
-        # ocean currents
         if current_params is not None:
             self.current_enabled = True
             self.cur_strength    = current_params.get('strength', 0.0)
@@ -61,24 +97,19 @@ class realisticAUVEnv(simpleAUVEnv):
         else:
             self.current_enabled = False
 
-        # action setup: discrete strafing or continuous
         if self.discrete_actions:
             self.actions = [
-                ( 0.5,  0.0,  0.0),  # forward
-                (-0.5,  0.0,  0.0),  # back
-                ( 0.0,  0.5,  0.0),  # strafe left
-                ( 0.0, -0.5,  0.0),  # strafe right
-                ( 0.0,  0.0,  0.3),  # pivot left
-                ( 0.0,  0.0, -0.3),  # pivot right
+                ( 0.5,  0.0,  0.0),
+                (-0.5,  0.0,  0.0),
+                ( 0.0,  0.5,  0.0),
+                ( 0.0, -0.5,  0.0),
+                ( 0.0,  0.0,  0.3),
+                ( 0.0,  0.0, -0.3),
             ]
             self.action_space = spaces.Discrete(len(self.actions))
         else:
-            # ─── New: Continuous 3-DoF bounds ──────────────────────────
-            # forward speed limit (m/s)
             self.v_limit     = v_limit
-            # lateral (strafe) speed limit (m/s)
             self.lat_limit   = lat_limit
-            # yaw rate limit (rad/s)
             self.omega_limit = omega_limit
 
             low = np.array(
@@ -92,6 +123,7 @@ class realisticAUVEnv(simpleAUVEnv):
             self.action_space = spaces.Box(low, high, dtype=np.float32)
             self.actions = None
             self._last_dist = None
+
 
     def reset(self):
         # 0) re-sample a new dock (preserve the number of docks)

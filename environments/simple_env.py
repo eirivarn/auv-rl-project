@@ -10,8 +10,10 @@ class SonarSensor:
     debris, and ghost echoes, ignoring beams that exit the map.
     """
     def __init__(self,
-                 fov=np.deg2rad(360), n_beams=20,
-                 max_range=20.0, resolution=0.05,
+                 fov=np.deg2rad(360), 
+                 n_beams=20,
+                 max_range=20.0, 
+                 resolution=0.05,
                  noise_std=0.00,
                  compute_intensity=False,
                  spreading_loss=True,

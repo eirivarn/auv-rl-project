@@ -50,15 +50,15 @@ class DQNAgent:
         self.env = env
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        # ── store LiDAR settings ───────────────────────────
+        # ---- store LiDAR settings ----
         self.use_lidar   = use_lidar
         self.lidar_range = lidar_range
 
-        # ── store history settings ───────────────────────
+        # ---- store history settings ----
         self.use_history    = use_history
         self.history_length = history_length
         
-        # ─── Dynamic input size ─────────────────────────────
+        # ---- Dynamic input size ----
         reset_output = env.reset()
         if isinstance(reset_output, tuple):
             sample_obs, _ = reset_output
@@ -69,27 +69,27 @@ class DQNAgent:
 
         self.output_dim = env.action_space.n
 
-        # ── build policy & target nets ───────────────────────
+        # ---- build policy & target nets ----
         self.policy_net = DQNNetwork(self.input_dim, hidden_dims, self.output_dim).to(self.device)
         self.target_net = DQNNetwork(self.input_dim, hidden_dims, self.output_dim).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
-        # optimizer, loss, discount
+        # ---- optimizer, loss, discount ----
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         self.criterion = nn.MSELoss()
         self.gamma     = gamma
 
-        # ε-greedy
+        # ---- ε-greedy ----
         self.epsilon       = epsilon_start
         self.epsilon_min   = epsilon_min
         self.epsilon_decay = epsilon_decay
 
-        # replay buffer
+        # ---- replay buffer ----
         self.memory     = deque(maxlen=buffer_size)
         self.batch_size = batch_size
 
-        # bookkeeping
+        # ---- bookkeeping ----
         self.target_update = target_update
         self.step_counter  = 0
 

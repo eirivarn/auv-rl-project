@@ -1,8 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
-import imageio
-from matplotlib import patches, animation
 import cv2
 import pygame
 from tqdm import trange
@@ -11,7 +9,7 @@ def train_dqn(env, agent, episodes=500, max_steps=200):
     rewards_hist = []
     pbar = tqdm(range(episodes), desc="DQN Training")
     for ep in pbar:
-        state = env.reset()
+        state, _ = env.reset()
         total_reward = 0
         done = False
 
@@ -37,7 +35,7 @@ def evaluate_agent(env, agent, episodes=100, max_steps=200):
     successes, steps = 0, []
 
     for _ in range(episodes):
-        state = env.reset()
+        state, _ = env.reset()
         done, t = False, 0
         final_reward = None
 
@@ -91,13 +89,13 @@ def record_pygame_robust(env, agent, out_path='auv.avi', max_steps=200, fps=30):
 
     try:
         agent.epsilon = 0.0
-        obs = env.reset()
+        state, _ = env.reset()
         done = False
 
         for t in trange(max_steps, desc="Recording"):
             # 3) Step agent first, so we don't render after done
-            idx = agent.select_action(obs)
-            obs, _, done, _ = env.step(idx)
+            idx = agent.select_action(state)
+            state, _, done, _ = env.step(idx)
             if done:
                 break
 
@@ -126,20 +124,17 @@ def record_pygame_robust(env, agent, out_path='auv.avi', max_steps=200, fps=30):
     print(f"Recording saved to {out_path}")
 
 def record_headless(env, agent, out_path='auv.gif', max_steps=200, fps=10):
-    """
-    Simpler: record frames via env.render(mode='rgb_array') and save a GIF.
-    """
     import imageio
     frames = []
     agent.epsilon = 0.0
-    obs = env.reset()
+    state, _ = env.reset()
     done = False
     t = 0
     while not done and t < max_steps:
         # render offscreen
         frame = env.render(mode='rgb_array')
         frames.append(frame)
-        idx = agent.select_action(obs)
+        idx = agent.select_action(state)
         obs, _, done, _ = env.step(idx)
         t += 1
 

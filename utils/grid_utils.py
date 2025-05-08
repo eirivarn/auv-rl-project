@@ -19,7 +19,7 @@ def train_dqn(env, agent, episodes=1000, max_steps=100):
     # Create a tqdm iterator over the episode indices
     pbar = tqdm(range(episodes), desc="DQN Training")
     for ep in pbar:
-        state = env.reset()
+        state, _ = env.reset()
         total_reward = 0
 
         for t in range(max_steps):
@@ -64,7 +64,12 @@ def train_agent(env: GridEnv,
     eps_history = []
 
     for ep in range(episodes):
-        obs = env.reset()
+        reset_output = env.reset()
+        if isinstance(reset_output, tuple):
+            obs, _ = reset_output
+        else:
+            obs = reset_output
+
         total_reward = 0
         for _ in range(max_steps):
             action = agent.select_action(obs)
@@ -83,13 +88,6 @@ def train_agent(env: GridEnv,
     return rewards_history, eps_history
 
 def plot_rewards(rewards: List[float], window: int = 20):
-    """
-    Plot total reward per episode, along with a moving-average curve.
-
-    Args:
-        rewards: list of total reward per episode
-        window:  size of the moving-average window (in episodes)
-    """
     plt.figure()
     episodes = np.arange(len(rewards))
 
@@ -122,112 +120,6 @@ def plot_epsilon(eps_history: List[float]):
     plt.tight_layout()
     plt.show()
 
-def plot_environment(env, figsize: tuple = (5,5)):
-    """
-    Reset the env once and plot the grid, obstacles, agent, and goal as a static figure.
-    
-    Args:
-        env:      Your GridDockEnv (must support reset(), env.agent_pos, env.goal_pos, env.obstacles, env.grid_size).
-        figsize:  Matplotlib figure size.
-    """
-    # 1) grab a fresh layout
-    obs = env.reset()
-
-    # 2) prep figure
-    fig, ax = plt.subplots(figsize=figsize)
-    W, H = env.grid_size
-    ax.set_xlim(-0.5, W - 0.5)
-    ax.set_ylim(-0.5, H - 0.5)
-    ax.set_xticks(range(W))
-    ax.set_yticks(range(H))
-    ax.grid(True)
-    
-    # 3) obstacles (if any)
-    for (ox, oy) in getattr(env, 'obstacles', []):
-        rect = patches.Rectangle((ox - 0.5, oy - 0.5), 1, 1, color='black')
-        ax.add_patch(rect)
-    
-    # 4) goal
-    gx, gy = env.goal_pos
-    rect = patches.Rectangle((gx - 0.5, gy - 0.5), 1, 1, color='green')
-    ax.add_patch(rect)
-    
-    # 5) agent
-    ax.plot(env.agent_pos[0], env.agent_pos[1],
-            marker='o', color='blue', markersize=12)
-    
-    ax.set_title("Grid Environment")
-    plt.show()
-
-
-def animate_agent_matplotlib(env, agent, max_steps: int = 100, delay: float = 0.1, figsize: tuple = (5,5)):
-    """
-    Simulate one greedy episode and return an inline HTML5 animation
-    of the agent moving on the grid, drawing obstacles as well.
-
-    Args:
-        env: an environment with .reset(), .step(), and attributes:
-             env.grid_size (tuple), env.agent_pos, env.goal_pos, env.obstacles (set of (x,y)).
-        agent: any agent with .select_action(obs) and .epsilon attribute.
-        max_steps: maximum steps to simulate in case it never reaches the goal.
-        delay: seconds between frames.
-        figsize: (width, height) in inches for the figure.
-
-    Returns:
-        IPython.display.HTML — the HTML5 animation.
-    """
-    # 1) simulate trajectory
-    agent.epsilon = 0.0
-    obs = env.reset()
-    agent_positions = [tuple(env.agent_pos)]
-    goal_pos = tuple(env.goal_pos)
-    obstacles = set(getattr(env, "obstacles", []))
-    done = False
-    steps = 0
-
-    while not done and steps < max_steps:
-        action = agent.select_action(obs)
-        obs, _, done, _ = env.step(action)
-        agent_positions.append(tuple(env.agent_pos))
-        steps += 1
-
-    # 2) set up the plot
-    fig, ax = plt.subplots(figsize=figsize)
-    W, H = env.grid_size
-    ax.set_xlim(-0.5, W - 0.5)
-    ax.set_ylim(-0.5, H - 0.5)
-    ax.set_xticks(range(W))
-    ax.set_yticks(range(H))
-    ax.grid(True)
-
-    # draw obstacles
-    for (ox, oy) in obstacles:
-        rect = patches.Rectangle((ox - 0.5, oy - 0.5), 1, 1, color='black')
-        ax.add_patch(rect)
-
-    # draw goal once
-    gx, gy = goal_pos
-    goal_patch = patches.Rectangle((gx - 0.5, gy - 0.5), 1, 1, color='green')
-    ax.add_patch(goal_patch)
-
-    # draw agent (will be updated)
-    agent_patch = patches.Circle((agent_positions[0][0], agent_positions[0][1]), 0.3, color='blue')
-    ax.add_patch(agent_patch)
-
-    # animation update func
-    def _update(frame_idx):
-        x, y = agent_positions[frame_idx]
-        agent_patch.center = (x, y)
-        return (agent_patch,)
-
-    ani = animation.FuncAnimation(
-        fig, _update,
-        frames=len(agent_positions),
-        interval=delay * 1000,
-        blit=True
-    )
-    plt.close(fig)
-    return HTML(ani.to_jshtml())
 
 
 def evaluate_agent(env, agent, episodes: int = 100, max_steps: int = 100):
@@ -242,7 +134,7 @@ def evaluate_agent(env, agent, episodes: int = 100, max_steps: int = 100):
     steps_list = []
 
     for _ in range(episodes):
-        obs = env.reset()
+        obs, _ = env.reset()
         done = False
         steps = 0
 

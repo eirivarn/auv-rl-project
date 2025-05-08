@@ -63,8 +63,8 @@ class GridEnv(gym.Env):
         self.static_goal_start  = np.array((grid_size[0]-1, grid_size[1]-1), dtype=int)
 
         # placeholders
-        self.agent_pos = None
-        self.goal_pos  = None
+        self.agent_position = None
+        self.goal_position  = None
         self.obstacles = set()
 
         # rendering internals
@@ -101,7 +101,7 @@ class GridEnv(gym.Env):
         Returns a 4-tuple: (d_up, d_down, d_left, d_right)
         Each is # of free cells until obstacle or wall, capped at lidar_range.
         """
-        x0, y0 = self.agent_pos
+        x0, y0 = self.agent_position
         W, H   = self.grid_size
         ranges = []
         # define scanning functions
@@ -126,20 +126,20 @@ class GridEnv(gym.Env):
     def reset(self):
         # 1) spawn agent & goal
         if self.spawn_mode == 'static':
-            self.agent_pos = self.static_agent_start.copy()
-            self.goal_pos  = self.static_goal_start.copy()
+            self.agent_position = self.static_agent_start.copy()
+            self.goal_position  = self.static_goal_start.copy()
         else:
-            self.agent_pos = np.random.randint(0, self.grid_size, size=2)
-            self.goal_pos  = np.random.randint(0, self.grid_size, size=2)
+            self.agent_position = np.random.randint(0, self.grid_size, size=2)
+            self.goal_position  = np.random.randint(0, self.grid_size, size=2)
 
         # 2) set up obstacles
         if self.static_obstacles:
             self.obstacles = set(self.static_obstacles)
         elif self.obstacle_count > 0:
-            # randomly sample obstacle_count positions avoiding agent & goal
+
             all_cells = {(x,y) for x in range(self.grid_size[0])
                                for y in range(self.grid_size[1])}
-            forbidden = {tuple(self.agent_pos), tuple(self.goal_pos)}
+            forbidden = {tuple(self.agent_position), tuple(self.goal_position)}
             choices   = list(all_cells - forbidden)
             np.random.shuffle(choices)
             self.obstacles = set(choices[:self.obstacle_count])
@@ -152,15 +152,16 @@ class GridEnv(gym.Env):
             self._history_buffer.clear()
             for _ in range(self.history_length+1):
                 self._history_buffer.append(obs.copy())
-        return self._get_obs()
+
+        return self._get_obs(), {}
 
     def step(self, action):
         """
-        Executes the action, updates agent_pos, obstacles, reward, done,
+        Executes the action, updates agent_position, obstacles, reward, done,
         and maintains the history buffer if use_history=True.
         """
         # 1) Move agent
-        x, y = self.agent_pos
+        x, y = self.agent_position
         if   action == 0: y += 1   # up
         elif action == 1: y -= 1   # down
         elif action == 2: x -= 1   # left
@@ -168,16 +169,16 @@ class GridEnv(gym.Env):
 
         # 2) Bounds check
         if not (0 <= x < self.grid_size[0] and 0 <= y < self.grid_size[1]):
-            x, y = self.agent_pos
+            x, y = self.agent_position
 
         # 3) Obstacle check
         if (x, y) in self.obstacles:
-            x, y = self.agent_pos
+            x, y = self.agent_position
 
-        self.agent_pos = np.array((x, y), dtype=int)
+        self.agent_position = np.array((x, y), dtype=int)
 
         # 4) Compute reward & done
-        done = np.array_equal(self.agent_pos, self.goal_pos)
+        done = np.array_equal(self.agent_position, self.goal_position)
         reward = 1.0 if done else -1.0
 
         # 5) Get the new “raw” obs (dx,dy + optional LiDAR)
@@ -196,7 +197,7 @@ class GridEnv(gym.Env):
 
     def _get_raw_obs(self):
         """ Returns the basic relative vector (dx,dy) or with LiDAR appended. """
-        basic = list(self.goal_pos - self.agent_pos)
+        basic = list(self.goal_position - self.agent_position)
         if self.use_lidar:
             basic += self._compute_lidar()
         return np.array(basic, dtype=int)
@@ -246,7 +247,7 @@ class GridEnv(gym.Env):
             pygame.draw.rect(self.screen, (0,0,0), rect)
 
         # draw goal (green)
-        gx, gy = self.goal_pos
+        gx, gy = self.goal_position
         goal_rect = pygame.Rect(
             gx*self.cell_size,
             (H-1-gy)*self.cell_size,
@@ -255,7 +256,7 @@ class GridEnv(gym.Env):
         pygame.draw.rect(self.screen, (0,200,0), goal_rect)
 
         # draw agent (blue circle)
-        ax, ay = self.agent_pos
+        ax, ay = self.agent_position
         cx = ax*self.cell_size + self.cell_size//2
         cy = (H-1-ay)*self.cell_size + self.cell_size//2
         pygame.draw.circle(self.screen, (0,0,200), (cx,cy), self.cell_size//3)

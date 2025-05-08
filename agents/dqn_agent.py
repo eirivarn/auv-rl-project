@@ -6,7 +6,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 
-# 1) The same MLP as before
 class DQNNetwork(nn.Module):
     def __init__(self, input_dim, hidden_dims, output_dim):
         super().__init__()
@@ -60,9 +59,12 @@ class DQNAgent:
         self.history_length = history_length
         
         # ─── Dynamic input size ─────────────────────────────
-        # sample one reset to see the full obs-length:
-        obs0 = env.reset()
-        self.input_dim  = int(obs0.shape[0])      # now = raw_dim * (history_length+1)
+        reset_output = env.reset()
+        if isinstance(reset_output, tuple):
+            sample_obs, _ = reset_output
+        else:
+            sample_obs = reset_output
+        self.input_dim = int(sample_obs.shape[0])
         self.output_dim = env.action_space.n
 
         self.output_dim = env.action_space.n
@@ -92,14 +94,21 @@ class DQNAgent:
         self.step_counter  = 0
 
     def select_action(self, state):
-        # state should already include LiDAR dims if use_lidar=True
-        if random.random() < self.epsilon:
-            return self.env.action_space.sample()
-        with torch.no_grad():
-            st = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
-            qv = self.policy_net(st)
-            return int(qv.argmax(dim=1).item())
-
+        exploration_prob = random.random()
+        if exploration_prob < self.epsilon:
+            action = self.env.action_space.sample()
+            return action
+        else:
+            state_tensor = torch.tensor(
+                state, 
+                dtype=torch.float32, 
+                device=self.device
+                ).unsqueeze(0) # unsqueeze to get shape (1, input_dim)
+            with torch.no_grad():
+                q_values = self.policy_net(state_tensor)
+                action = q_values.max(1)[1].item()
+            return action
+            
     def store_transition(self, s, a, r, s_next, done):
         self.memory.append((s, a, r, s_next, done))
 
@@ -129,10 +138,8 @@ class DQNAgent:
 
         states, actions, rewards, next_states, dones = self.sample_batch()
 
-        # current Q(s,a)
         q_values = self.policy_net(states).gather(1, actions)
 
-        # target: r + γ * max_a' Q_target(s',a')
         with torch.no_grad():
             max_next_q = self.target_net(next_states).max(1)[0].unsqueeze(1)
             target_q   = rewards + (1 - dones) * self.gamma * max_next_q
@@ -149,42 +156,11 @@ class DQNAgent:
         if self.step_counter % self.target_update == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
 
-    def save(self, path: str, extra: dict = None):
-        """
-        Save a full checkpoint containing:
-        - policy network state_dict
-        - agent hyperparameters (e.g. hidden_dims, batch_size, etc.)
-        - optionally any extra info you pass in
-        """
-        ckpt = {
-            "state_dict": self.policy_net.state_dict(),
-            "hidden_dims": self.policy_net.net[0].out_features,  # or store your config explicitly
-            "batch_size": self.batch_size,
-        }
-        if extra:
-            ckpt.update(extra)
-        torch.save(ckpt, path)
 
-    def load_from_checkpoint(cls, env, path: str, device=None):
-        """
-        Construct a new agent from a saved checkpoint.
-        """
-        ckpt = torch.load(path, map_location=device)
-        # read architecture
-        hidden_dims = ckpt["hidden_dims"]
-        # instantiate agent with the same settings
-        agent = cls(env,
-                    hidden_dims=[hidden_dims, hidden_dims],  # or reconstruct full list
-                    lr=ckpt.get("lr", 1e-3),
-                    gamma=ckpt.get("gamma", 0.99),
-                    epsilon_start=ckpt.get("epsilon_start", 1.0),
-                    epsilon_min=ckpt.get("epsilon_min", 0.01),
-                    epsilon_decay=ckpt.get("epsilon_decay", 0.995),
-                    batch_size=ckpt.get("batch_size", 64),
-                    buffer_size=ckpt.get("buffer_size", 10_000),
-                    target_update=ckpt.get("target_update", 10),
-                    device=device)
-        # load weights
-        agent.policy_net.load_state_dict(ckpt["state_dict"])
-        agent.target_net.load_state_dict(ckpt["state_dict"])
-        return agent
+    def save(self, filepath: str) -> None:
+        torch.save(self.policy_net.state_dict(), filepath)
+
+    def load(self, filepath: str) -> None:
+        state_dict = torch.load(filepath, map_location=self.device)
+        self.policy_net.load_state_dict(state_dict)
+        self.target_net.load_state_dict(state_dict)

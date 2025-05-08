@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 from typing import List
-from environments.grid_env import GridDockEnv
+from environments.grid_env import GridEnv
 from agents.q_learning_agent import QLearningAgent
 from IPython.display import clear_output, display
 import numpy as np
@@ -48,7 +48,7 @@ def train_dqn(env, agent, episodes=1000, max_steps=100):
 
     return rewards_hist
 
-def train_agent(env: GridDockEnv,
+def train_agent(env: GridEnv,
                 agent: QLearningAgent,
                 episodes: int = 500,
                 max_steps: int = 100,

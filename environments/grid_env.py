@@ -3,35 +3,48 @@
 import numpy as np
 import pygame
 from collections import deque
+import gym
+from gym import spaces
 
+from utils.constants import (
+    WHITE,
+    GRID_COLOR,
+    GOAL_COLOR,
+    AGENT_COLOR,
+    OBSTACLE_COLOR,
+    DEFAULT_GRID_SIZE,
+    DEFAULT_CELL_SIZE,
+    DEFAULT_FPS,
+    DEFAULT_LIDAR_RANGE,
+    DEFAULT_HISTORY_LENGTH,
+    DEFAULT_SPAWN_MODE,
+    DEFAULT_USE_LIDAR,
+    DEFAULT_USE_HISTORY,
+    DEFAULT_OBSTACLE_COUNT,
+    DEFAULT_OBSTACLE_POSITIONS,
+    DEFAULT_FPS,
+)
 
-class GridDockEnv:
+class GridEnv(gym.Env):
     def __init__(self,
-                 grid_size=(5,5),
-                 spawn_mode='static',
-                 cell_size=64,
-                 fps=10,
-                 obstacle_positions=None,
-                 obstacle_count=0,
-                 lidar: bool = False,
-                 lidar_range: int = 10,
-                 use_history: bool = False,
-                 history_length: int = 3):
-        """
-        Args:
-            grid_size:      (width, height) of the grid
-            spawn_mode:     'static' or 'random' start/goal spawns
-            cell_size:      pixel size of each cell for rendering
-            fps:            framerate cap for human rendering
-            obstacle_positions: list of (x,y) tuples for static obstacles, or None
-            obstacle_count:    number of random obstacles per episode
-        """
+                 grid_size=DEFAULT_GRID_SIZE,
+                 spawn_mode=DEFAULT_SPAWN_MODE,
+                 cell_size=DEFAULT_CELL_SIZE,
+                 fps=DEFAULT_FPS,
+                 obstacle_positions=DEFAULT_OBSTACLE_POSITIONS,
+                 obstacle_count= DEFAULT_OBSTACLE_COUNT,
+                 use_lidar: bool = DEFAULT_USE_LIDAR,
+                 lidar_range: int = DEFAULT_LIDAR_RANGE,
+                 use_history: bool = DEFAULT_USE_HISTORY,
+                 history_length: int = DEFAULT_HISTORY_LENGTH
+                 ):
+
         assert spawn_mode in ('static','random')
         self.grid_size = tuple(grid_size)
         self.spawn_mode = spawn_mode
         self.cell_size  = cell_size
         self._fps       = fps
-        self.use_lidar   = lidar
+        self.use_lidar   = use_lidar
         self.lidar_range = lidar_range
         self.use_history     = use_history
         self.history_length  = history_length
@@ -61,16 +74,27 @@ class GridDockEnv:
         self._window      = None
         self.clock        = None
 
-        # action/observation stubs
-        class A:
-            def __init__(self): self.n = 4
-            def sample(self): return np.random.randint(0,4)
-        self.action_space = A()
+        # action/observation 
 
-        class O: pass
-        self.observation_space = O()
-        self.observation_space.low  = np.array([-grid_size[0]+1, -grid_size[1]+1], dtype=int)
-        self.observation_space.high = np.array([ grid_size[0]-1,  grid_size[1]-1], dtype=int)
+        self.action_space = spaces.Discrete(4)
+
+        # observation: [dx,dy] plus optional lidar → integer box
+        low  = np.array([-grid_size[0]+1, -grid_size[1]+1], dtype=np.int32)
+        high = np.array([ grid_size[0]-1,  grid_size[1]-1], dtype=np.int32)
+
+        if self.use_lidar:
+            # extend low/high by 4 more dims (range 0..lidar_range)
+            low  = np.concatenate([low, np.zeros(4, dtype=np.int32)])
+            high = np.concatenate([high, np.full(4, self.lidar_range, dtype=np.int32)])
+        if self.use_history:
+            reps = self.history_length + 1
+            low  = np.tile(low,  reps)
+            high = np.tile(high, reps)
+
+        self.observation_space = spaces.Box(low=low,
+                                            high=high,
+                                            dtype=np.int32)
+
 
     def _compute_lidar(self):
         """

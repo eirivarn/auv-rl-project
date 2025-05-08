@@ -96,7 +96,7 @@ class GridEnv(gym.Env):
                                             dtype=np.int32)
 
 
-    def _compute_lidar(self):
+    def _compute_lidar(self) -> list:
         """
         Returns a 4-tuple: (d_up, d_down, d_left, d_right)
         Each is # of free cells until obstacle or wall, capped at lidar_range.
@@ -123,7 +123,7 @@ class GridEnv(gym.Env):
             ranges.append(dist)
         return ranges
 
-    def reset(self):
+    def reset(self) -> tuple:
         # 1) spawn agent & goal
         if self.spawn_mode == 'static':
             self.agent_position = self.static_agent_start.copy()
@@ -155,7 +155,7 @@ class GridEnv(gym.Env):
 
         return self._get_obs(), {}
 
-    def step(self, action):
+    def step(self, action) -> tuple:
         """
         Executes the action, updates agent_position, obstacles, reward, done,
         and maintains the history buffer if use_history=True.
@@ -195,14 +195,14 @@ class GridEnv(gym.Env):
 
         return obs, reward, done, {}
 
-    def _get_raw_obs(self):
+    def _get_raw_obs(self) -> np.ndarray:
         """ Returns the basic relative vector (dx,dy) or with LiDAR appended. """
         basic = list(self.goal_position - self.agent_position)
         if self.use_lidar:
             basic += self._compute_lidar()
         return np.array(basic, dtype=int)
 
-    def _get_obs(self):
+    def _get_obs(self) -> np.ndarray:
         if not self.use_history:
             return self._get_raw_obs()
         # otherwise flatten the history buffer
@@ -211,7 +211,7 @@ class GridEnv(gym.Env):
             flat.extend(past.tolist())
         return np.array(flat, dtype=int)
 
-    def render(self, mode='human'):
+    def render(self, mode='human') -> None:
         if not self._initialized:
             pygame.init()
             # off-screen surface
@@ -267,7 +267,7 @@ class GridEnv(gym.Env):
         if mode=='human':
             self.clock.tick(self._fps)
 
-    def close(self):
+    def close(self) -> None:
         if self._initialized:
             pygame.quit()
             self._initialized = False

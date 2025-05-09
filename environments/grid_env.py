@@ -2,11 +2,10 @@
 
 import numpy as np
 import pygame
-from collections import deque
 import gym
 from gym import spaces
 
-from utils.grid_utils2 import place_obstacles, move, Lidar, HistoryBuffer
+from utils.grid_utils import place_obstacles, move, Lidar, HistoryBuffer
 
 from utils.constants import (
     DEFAULT_GRID_SIZE,

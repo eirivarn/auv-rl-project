@@ -1,7 +1,6 @@
 import math
 import numpy as np
 
-
 class SonarSensor:
     """
     Simulates a forward-mounted fan-beam sonar sensor with optional intensity,

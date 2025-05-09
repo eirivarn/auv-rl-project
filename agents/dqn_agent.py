@@ -19,7 +19,7 @@ class DQNNetwork(nn.Module):
         layers.append(nn.Linear(dims[-1], output_dim))
         self.net = nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x) -> torch.Tensor:
         return self.net(x)
 
 class DQNAgent:
@@ -34,19 +34,12 @@ class DQNAgent:
                  batch_size=64,
                  buffer_size=10_000,
                  target_update=10,
-                 # ── LiDAR flags ───────────────────────────
                  use_lidar: bool = False,
                  lidar_range: int = 10,
-                 # ── history flags ───────────────────────
                  use_history: bool = False,
                  history_length: int = 3,
                  device=None):
-        """
-        env: your GridDockEnv
-        use_lidar: if True, env._get_obs() returns [dx,dy,d_up,d_dn,d_lt,d_rt]
-        lidar_range: maximum scan distance (for env & for reference)
-        rest: unchanged from your original agent
-        """
+
         self.env = env
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -93,7 +86,7 @@ class DQNAgent:
         self.target_update = target_update
         self.step_counter  = 0
 
-    def select_action(self, state):
+    def select_action(self, state) -> int:
         exploration_prob = random.random()
         if exploration_prob < self.epsilon:
             action = self.env.action_space.sample()
@@ -116,14 +109,12 @@ class DQNAgent:
         batch = random.sample(self.memory, self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        # stack into numpy arrays for speed
         states_np      = np.array(states,      dtype=np.float32)
         next_states_np = np.array(next_states, dtype=np.float32)
         actions_np     = np.array(actions,     dtype=np.int64)
         rewards_np     = np.array(rewards,     dtype=np.float32)
         dones_np       = np.array(dones,       dtype=np.float32)
 
-        # convert once to torch tensors
         states_tensor      = torch.from_numpy(states_np).to(self.device)
         next_states_tensor = torch.from_numpy(next_states_np).to(self.device)
         actions_tensor     = torch.from_numpy(actions_np).unsqueeze(1).to(self.device)
@@ -155,7 +146,6 @@ class DQNAgent:
     def maybe_update_target(self):
         if self.step_counter % self.target_update == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
-
 
     def save(self, filepath: str) -> None:
         torch.save(self.policy_net.state_dict(), filepath)

@@ -5,7 +5,7 @@ from collections import deque
 
 from utils.sonar import SonarSensor
 
-class simpleAUVEnv:
+class staticAUVEnv:
     def __init__(self,
                  grid_size=(200, 200),
                  resolution=0.05,
@@ -26,12 +26,11 @@ class simpleAUVEnv:
                  death_limit: int = 4,
                  discrete_actions: bool = True
                 ):
-        # core settings
         self.grid_size = grid_size
         self.resolution = resolution
         self.window_size = window_size
         self.random_map = random_map
-        # CA parameters
+
         self.map_fill_prob = map_fill_prob
         self.smooth_steps = smooth_steps
         self.birth_limit = birth_limit
@@ -40,19 +39,15 @@ class simpleAUVEnv:
         self.start_mode = start_mode
         self.spawn_clearance = spawn_clearance
 
-        # penalties and shaping
         self.wall_thresh = 0.5
         self.wall_penalty_coeff = 2.0
         self.collision_penalty = -1.0
         self.progress_coeff = 5.0
 
-        # history buffer
         self.use_history = use_history
         self.history_length = history_length
         self._history_buffer = deque(maxlen=history_length+1)
 
-
-        # build occupancy & reflectivity
         if self.random_map:
             self._build_random_maps()
         else:

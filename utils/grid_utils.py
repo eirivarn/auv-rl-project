@@ -120,8 +120,6 @@ def plot_epsilon(eps_history: List[float]):
     plt.tight_layout()
     plt.show()
 
-
-
 def evaluate_agent(env, agent, episodes: int = 100, max_steps: int = 100):
     """
     Run the agent (greedy policy) for `episodes` random episodes,

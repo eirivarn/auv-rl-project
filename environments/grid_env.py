@@ -6,12 +6,9 @@ from collections import deque
 import gym
 from gym import spaces
 
+from utils.grid_utils2 import place_obstacles, move, Lidar, HistoryBuffer
+
 from utils.constants import (
-    WHITE,
-    GRID_COLOR,
-    GOAL_COLOR,
-    AGENT_COLOR,
-    OBSTACLE_COLOR,
     DEFAULT_GRID_SIZE,
     DEFAULT_CELL_SIZE,
     DEFAULT_FPS,
@@ -48,14 +45,13 @@ class GridEnv(gym.Env):
         self.lidar_range = lidar_range
         self.use_history     = use_history
         self.history_length  = history_length
-        self._history_buffer = deque(maxlen=history_length + 1)
 
         # obstacle config
         if obstacle_positions is not None:
             self.static_obstacles = set(obstacle_positions)
             self.obstacle_count   = 0
         else:
-            self.static_obstacles = set()
+            self.static_obstacles = None
             self.obstacle_count   = int(obstacle_count)
 
         # fixed agent & goal for static mode
@@ -74,16 +70,12 @@ class GridEnv(gym.Env):
         self._window      = None
         self.clock        = None
 
-        # action/observation 
-
         self.action_space = spaces.Discrete(4)
 
-        # observation: [dx,dy] plus optional lidar → integer box
         low  = np.array([-grid_size[0]+1, -grid_size[1]+1], dtype=np.int32)
         high = np.array([ grid_size[0]-1,  grid_size[1]-1], dtype=np.int32)
 
         if self.use_lidar:
-            # extend low/high by 4 more dims (range 0..lidar_range)
             low  = np.concatenate([low, np.zeros(4, dtype=np.int32)])
             high = np.concatenate([high, np.full(4, self.lidar_range, dtype=np.int32)])
         if self.use_history:
@@ -91,40 +83,18 @@ class GridEnv(gym.Env):
             low  = np.tile(low,  reps)
             high = np.tile(high, reps)
 
+        self.sensors = []
+        if self.use_lidar:
+            self.sensors.append(Lidar(self, lidar_range))
+        if self.use_history:
+            self.sensors.append(HistoryBuffer(history_length))
+
         self.observation_space = spaces.Box(low=low,
                                             high=high,
                                             dtype=np.int32)
 
-
-    def _compute_lidar(self) -> list:
-        """
-        Returns a 4-tuple: (d_up, d_down, d_left, d_right)
-        Each is # of free cells until obstacle or wall, capped at lidar_range.
-        """
-        x0, y0 = self.agent_position
-        W, H   = self.grid_size
-        ranges = []
-        # define scanning functions
-        directions = [( 0, 1),  # up
-                      ( 0,-1),  # down
-                      (-1, 0),  # left
-                      ( 1, 0)]  # right
-        for dx, dy in directions:
-            dist = 0
-            x, y = x0, y0
-            # step until obstacle, wall, or max range
-            while dist < self.lidar_range:
-                x += dx; y += dy
-                if not (0 <= x < W and 0 <= y < H):
-                    break
-                if (x, y) in self.obstacles:
-                    break
-                dist += 1
-            ranges.append(dist)
-        return ranges
-
     def reset(self) -> tuple:
-        # 1) spawn agent & goal
+
         if self.spawn_mode == 'static':
             self.agent_position = self.static_agent_start.copy()
             self.goal_position  = self.static_goal_start.copy()
@@ -132,84 +102,40 @@ class GridEnv(gym.Env):
             self.agent_position = np.random.randint(0, self.grid_size, size=2)
             self.goal_position  = np.random.randint(0, self.grid_size, size=2)
 
-        # 2) set up obstacles
-        if self.static_obstacles:
-            self.obstacles = set(self.static_obstacles)
-        elif self.obstacle_count > 0:
-
-            all_cells = {(x,y) for x in range(self.grid_size[0])
-                               for y in range(self.grid_size[1])}
-            forbidden = {tuple(self.agent_position), tuple(self.goal_position)}
-            choices   = list(all_cells - forbidden)
-            np.random.shuffle(choices)
-            self.obstacles = set(choices[:self.obstacle_count])
-        else:
-            self.obstacles = set()
+        self.obstacles = place_obstacles(self.agent_position,
+                                         self.goal_position,
+                                         self.grid_size,
+                                         static_positions=self.static_obstacles,
+                                         count=self.obstacle_count)
         
-        # 3) initialize history buffer
-        if self.use_history:
-            obs = self._get_raw_obs()
-            self._history_buffer.clear()
-            for _ in range(self.history_length+1):
-                self._history_buffer.append(obs.copy())
+        raw_observations = np.array(self.goal_position - self.agent_position, dtype=int)
 
-        return self._get_obs(), {}
+        observation = raw_observations
+        for sensor in self.sensors:
+            observation = sensor.reset(observation)
 
+        if self.observation_space is None:
+            observation_shape = observation.shape[0]
+            low = -np.array(self.grid_size)+1
+            high = np.array(self.grid_size)-1
+            self.observation_space = spaces.Box(low=np.full(observation_shape, low.min(),int),
+                                                high=np.full(observation_shape, high.max(),int),
+                                                dtype=np.int32)
+        return observation, {}
+    
     def step(self, action) -> tuple:
-        """
-        Executes the action, updates agent_position, obstacles, reward, done,
-        and maintains the history buffer if use_history=True.
-        """
-        # 1) Move agent
-        x, y = self.agent_position
-        if   action == 0: y += 1   # up
-        elif action == 1: y -= 1   # down
-        elif action == 2: x -= 1   # left
-        elif action == 3: x += 1   # right
+        self.agent_position = move(self.agent_position, action, self.grid_size, self.obstacles)
 
-        # 2) Bounds check
-        if not (0 <= x < self.grid_size[0] and 0 <= y < self.grid_size[1]):
-            x, y = self.agent_position
-
-        # 3) Obstacle check
-        if (x, y) in self.obstacles:
-            x, y = self.agent_position
-
-        self.agent_position = np.array((x, y), dtype=int)
-
-        # 4) Compute reward & done
         done = np.array_equal(self.agent_position, self.goal_position)
         reward = 1.0 if done else -1.0
 
-        # 5) Get the new “raw” obs (dx,dy + optional LiDAR)
-        raw_obs = self._get_raw_obs()
+        raw_observation = np.array(self.goal_position - self.agent_position, dtype=int)
+        observation = raw_observation
+        for sensor in self.sensors:
+            observation = sensor.process(observation)
 
-        # 6) Update history buffer (if enabled)
-        if self.use_history:
-            # append latest raw_obs; deque will drop oldest if full
-            self._history_buffer.append(raw_obs.copy())
-            # build the stacked observation
-            obs = np.concatenate(list(self._history_buffer), axis=0)
-        else:
-            obs = raw_obs
+        return observation, reward, done, {}
 
-        return obs, reward, done, {}
-
-    def _get_raw_obs(self) -> np.ndarray:
-        """ Returns the basic relative vector (dx,dy) or with LiDAR appended. """
-        basic = list(self.goal_position - self.agent_position)
-        if self.use_lidar:
-            basic += self._compute_lidar()
-        return np.array(basic, dtype=int)
-
-    def _get_obs(self) -> np.ndarray:
-        if not self.use_history:
-            return self._get_raw_obs()
-        # otherwise flatten the history buffer
-        flat = []
-        for past in self._history_buffer:
-            flat.extend(past.tolist())
-        return np.array(flat, dtype=int)
 
     def render(self, mode='human') -> None:
         if not self._initialized:

@@ -5,6 +5,7 @@ from collections import deque
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from tqdm import tqdm
 
 class DQNNetwork(nn.Module):
     def __init__(self, input_dim, hidden_dims, output_dim):
@@ -164,3 +165,37 @@ class DQNAgent:
         state_dict = torch.load(filepath, map_location=self.device)
         self.policy_net.load_state_dict(state_dict)
         self.target_net.load_state_dict(state_dict)
+
+def train_dqn(env, agent, episodes=1000, max_steps=100):
+    rewards_hist = []
+
+    pbar = tqdm(range(episodes), desc="DQN Training")
+    for ep in pbar:
+        state, _ = env.reset()
+        total_reward = 0
+
+        for t in range(max_steps):
+            action = agent.select_action(state)
+            next_s, reward, done, _ = env.step(action)
+
+            agent.store_transition(state, action, reward, next_s, done)
+            agent.optimize_model()
+
+            state = next_s
+            total_reward += reward
+            agent.step_counter += 1
+            agent.maybe_update_target()
+
+            if done:
+                break
+
+        agent.update_epsilon()
+        rewards_hist.append(total_reward)
+
+        # Update the bar’s postfix fields
+        pbar.set_postfix({
+            "Reward": f"{total_reward:.1f}",
+            "ε":      f"{agent.epsilon:.3f}"
+        })
+
+    return rewards_hist

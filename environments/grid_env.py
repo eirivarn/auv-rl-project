@@ -8,7 +8,7 @@ from gym import spaces
 
 from utils.grid_utils import place_obstacles, move, Lidar, HistoryBuffer
 
-from utils.constants import (
+from utils.grid_constants import (
     DEFAULT_GRID_SIZE,
     DEFAULT_CELL_SIZE,
     DEFAULT_FPS,

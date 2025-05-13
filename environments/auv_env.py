@@ -1,393 +1,317 @@
 import numpy as np
-import pygame
 import math
-from collections import deque
 
-from utils.sonar import SonarSensor
+import pygame
+from utils.auv_utils import (
+    SonarSensor,
+    build_maps,
+    build_random_maps,
+    sample_spawn,
+    sample_random_goal,
+    get_raw_observation
+
+)
+from utils.grid_utils import HistoryBuffer
+from utils.auv_constants import (
+    DEFAULT_AUV_GRID_SIZE,
+    DEFAULT_RESOLUTION,
+    DEFAULT_SONAR_PARAMS,
+    DEFAULT_DOCKS,
+    DEFAULT_DOCK_RADIUS,
+    DEFAULT_DOCK_REWARD,
+    DEFAULT_USE_HISTORY,
+    DEFAULT_HISTORY_LENGTH,
+    DEFAULT_N_BEAMS,
+    DEFAULT_START_MODE,
+    DEFAULT_SPAWN_CLEARANCE,
+    DEFAULT_RANDOM_MAP,
+    DEFAULT_MAP_FILL_PROB,
+    DEFAULT_SMOOTH_STEPS,
+    DEFAULT_BIRTH_LIMIT,
+    DEFAULT_DEATH_LIMIT,
+    DEFAULT_WALL_THRESH,
+    DEFAULT_WALL_PENALTY_COEFF,
+    DEFAULT_COLLISION_PENALTY,
+    DEFAULT_PROGRESS_COEFF,
+    DEFAULT_TURN_PENALTY_COEFF,
+    DEFAULT_USE_DISCRETE_ACTIONS,
+    DEFAULT_DISCRETE_ACTIONS,
+    DEFAULT_WINDOW_SIZE
+)
 
 class AUVEnv:
     def __init__(self,
-                 grid_size=(200, 200),
-                 resolution=0.05,
-                 sonar_params=None,
-                 docks=None,
-                 dock_radius=0.2,
-                 dock_reward=1.0,
-                 use_history: bool = False,
-                 history_length: int = 3,
-                 window_size=(800, 600),
-                 n_beams: int = 8,
-                 start_mode: str = 'center',
-                 spawn_clearance: float = 1.0,
-                 random_map: bool = False,
-                 map_fill_prob: float = 0.3,
-                 smooth_steps: int = 5,
-                 birth_limit: int = 6,
-                 death_limit: int = 4,
-                 discrete_actions: bool = True
+                 grid_size=DEFAULT_AUV_GRID_SIZE,
+                 window_size= DEFAULT_WINDOW_SIZE,
+                 resolution=DEFAULT_RESOLUTION,
+                 sonar_params=DEFAULT_SONAR_PARAMS,
+                 docks=DEFAULT_DOCKS,
+                 dock_radius=DEFAULT_DOCK_RADIUS,
+                 dock_reward=DEFAULT_DOCK_REWARD,
+                 use_history: bool = DEFAULT_USE_HISTORY,
+                 history_length: int = DEFAULT_HISTORY_LENGTH,
+                 n_beams: int = DEFAULT_N_BEAMS,
+                 start_mode: str = DEFAULT_START_MODE,
+                 spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE,
+                 random_map: bool = DEFAULT_RANDOM_MAP,
+                 map_fill_prob: float = DEFAULT_MAP_FILL_PROB,
+                 smooth_steps: int = DEFAULT_SMOOTH_STEPS,
+                 birth_limit: int = DEFAULT_BIRTH_LIMIT,
+                 death_limit: int = DEFAULT_DEATH_LIMIT,
+                 wall_thresh: float = DEFAULT_WALL_THRESH,
+                 wall_penalty_coeff: float = DEFAULT_WALL_PENALTY_COEFF,
+                 collision_penalty: float = DEFAULT_COLLISION_PENALTY,
+                 progress_coeff: float = DEFAULT_PROGRESS_COEFF,
+                 turn_penalty_coeff: float = DEFAULT_TURN_PENALTY_COEFF,
+                 use_discrete_actions: bool = DEFAULT_USE_DISCRETE_ACTIONS
                 ):
-        
-        # core settings
-        self.grid_size = grid_size
-        self.resolution = resolution
-        self.window_size = window_size
-        self.random_map = random_map
-        # CA parameters
+        # core params
+        self.grid_size        = grid_size
+        self.window_size      = window_size
+        self.resolution       = resolution
+        self.random_map       = random_map
+        self.n_beams          = n_beams
+        self.start_mode       = start_mode
+        self.spawn_clearance  = spawn_clearance
+
+        # map generation
         self.map_fill_prob = map_fill_prob
-        self.smooth_steps = smooth_steps
-        self.birth_limit = birth_limit
-        self.death_limit = death_limit
-        
-        self.start_mode = start_mode
-        self.spawn_clearance = spawn_clearance
-
-        # penalties and shaping
-        self.wall_thresh = 0.5
-        self.wall_penalty_coeff = 2.0
-        self.collision_penalty = -1.0
-        self.progress_coeff = 5.0
-
-        # history buffer
-        self.use_history = use_history
-        self.history_length = history_length
-        self._history_buffer = deque(maxlen=history_length+1)
-
-
-        # build occupancy & reflectivity
+        self.smooth_steps   = smooth_steps
+        self.birth_limit    = birth_limit
+        self.death_limit    = death_limit
         if self.random_map:
-            self._build_random_maps()
+            build_random_maps(self)
         else:
-            self._build_maps()
+            build_maps(self)
 
-        # sonar
-        default_sonar = dict(
-            fov=np.deg2rad(360),
-            n_beams=n_beams,
-            max_range=10.0,
-            resolution=resolution,
-            noise_std=0.0,
-            compute_intensity=False,
-            debris_rate=0,
-            ghost_prob=0.0
-        )
-
-        params = default_sonar.copy()
-        if sonar_params:
-            params.update(sonar_params)
-        self.sonar = SonarSensor(**params)
-
-        # actions
-        self.turn_penalty_coeff = 0.5
-
-        self.discrete_actions = discrete_actions
-        if self.discrete_actions:
-            self.actions = [(0.3,0.0),
-                            (0.3,0.3),
-                            (0.3,-0.3),
-                            (0.0,0.3),
-                            (0.0,-0.3)]
-        else:
-            self.actions = None
+        # reward shaping
+        self.wall_thresh         = wall_thresh
+        self.wall_penalty_coeff  = wall_penalty_coeff
+        self.collision_penalty   = collision_penalty
+        self.progress_coeff      = progress_coeff
+        self.turn_penalty_coeff  = turn_penalty_coeff
 
         # docks
         if isinstance(docks, int):
-            self.docks = [self._sample_random_goal() for _ in range(docks)]
+            self.docks = [sample_random_goal(self) for _ in range(docks)]
         else:
-            self.docks = docks or [self._sample_random_goal()]
-
+            self.docks = docks or [sample_random_goal(self)]
         self.dock_radius = dock_radius
         self.dock_reward = dock_reward
-        self._visited = [False]*len(self.docks)
-        self.goal_color = (255,255,0)
+        self._visited    = [False]*len(self.docks)
 
+        # sensors
+        # ─── Sonar ──────────────────────────────────
+        params = DEFAULT_SONAR_PARAMS.copy()
+        params.update(sonar_params or {})
+        params["n_beams"]    = self.n_beams
+        params["resolution"] = self.resolution
+        self.sonar = SonarSensor(**params)
+
+        # ─── History ─────────────────────────────────
+        self.use_history     = use_history
+        self.history_length  = history_length
+        self.history_buffer  = HistoryBuffer(history_length + 1)
+
+        # discrete actions
+        self.use_discrete_actions = use_discrete_actions
+        if self.use_discrete_actions:
+            self.actions = DEFAULT_DISCRETE_ACTIONS.copy()
+        else:
+            self.actions = None
+
+        # internal state
+        self._last_dist = None
+        self.pose        = None
+
+        # seed first episode
         self.reset()
 
-    def _build_maps(self):
-        H,W = self.grid_size
-        self.occ_grid = np.zeros((H,W),dtype=np.uint8)
-        self.refl_grid = np.full((H,W),0.2)
-        rectangles = [(40,40,10,60),
-        (100,0,20,80),(150,120,50,10),(0,100,60,20),(80,150,10,40)]
-        for cx,cy,w,h in rectangles:
-            self.occ_grid[cy:cy+h,cx:cx+w] = 1
-            self.refl_grid[cy:cy+h,cx:cx+w] = np.random.uniform(0.5,1.0,size=(h,w))
+    def reset(self) -> tuple[np.ndarray, dict]:
+        # 1) spawn
+        x0, y0 = sample_spawn(
+            occ_grid=self.occ_grid,
+            resolution=self.resolution,
+            start_mode=self.start_mode,
+            spawn_clearance=self.spawn_clearance
+        )
+        # 2) pose & heading
+        self.pose = np.array([x0, y0, 0.0], dtype=float)
+        first = self.docks[0]
+        self.pose[2]   = math.atan2(first[1] - y0, first[0] - x0)
+        self._visited  = [False] * len(self.docks)
+        self._last_dist = np.linalg.norm(self.pose[:2] - first)
 
-    def _build_random_maps(self):
-        H,W = self.grid_size
-        grid = (np.random.rand(H,W) < self.map_fill_prob).astype(np.uint8)
-        def count_walls(y,x):
-            total=0
-            for dy in(-1,0,1):
-                for dx in(-1,0,1):
-                    if dy==0 and dx==0: continue
-                    ny, nx = y+dy, x+dx
-                    if 0<=ny<H and 0<=nx<W:
-                        total+=grid[ny,nx]
-                    else: total+=1
-            return total
-        for _ in range(self.smooth_steps):
-            newg=np.zeros_like(grid)
-            for y in range(H):
-                for x in range(W):
-                    walls=count_walls(y,x)
-                    if grid[y,x]==1:
-                        newg[y,x]=1 if walls>=self.death_limit else 0
-                    else:
-                        newg[y,x]=1 if walls>=self.birth_limit else 0
-            grid=newg
-        self.occ_grid=grid
-        self.refl_grid=np.full((H,W),0.2,dtype=np.float32)
+        ranges_and_dock = get_raw_observation(self)  # = [ranges; dock_feats]
+        if self.use_history:
+            obs = self.history_buffer.reset(ranges_and_dock)
+        else:
+            obs = ranges_and_dock.copy()
 
-    def _sample_random_goal(self):
-        H,W=self.grid_size
-        return np.array([np.random.uniform(0,W*self.resolution),
-                         np.random.uniform(0,H*self.resolution)])
+        return obs, {}
 
+    def step(self, action):
+        # 1) pick v,ω
+        if self.use_discrete_actions:
+            v, omega = self.actions[int(action)]
+        else:
+            v, omega = action
+        v     = float(np.clip(v,      -1.0, 1.0))
+        omega = float(np.clip(omega, -np.pi/4, np.pi/4))
 
-    def _get_raw_obs(self):
-        # 1) normalized sonar: [0…1]
+        # 2) propose
+        old_x, old_y, old_th = self.pose
+        new_th = math.atan2(math.sin(old_th+omega),
+                             math.cos(old_th+omega))
+        new_x = old_x + v * math.cos(new_th)
+        new_y = old_y + v * math.sin(new_th)
+
+        # 3) collision
+        dx, dy = new_x-old_x, new_y-old_y
+        n_steps = max(1, int(math.hypot(dx,dy)/(self.resolution*0.3)))
+        collided = False
+        for i in range(1, n_steps+1):
+            xi = old_x + dx*(i/n_steps)
+            yi = old_y + dy*(i/n_steps)
+            ri = int(np.clip(yi/self.resolution, 0, self.grid_size[0]-1))
+            ci = int(np.clip(xi/self.resolution, 0, self.grid_size[1]-1))
+            if self.occ_grid[ri,ci]:
+                collided = True
+                break
+
+        # 4) commit
+        if collided:
+            self.pose = np.array([old_x, old_y, new_th], dtype=float)
+        else:
+            self.pose = np.array([new_x, new_y, new_th], dtype=float)
+
+        # 5) reward/done
+        d = np.linalg.norm(self.pose[:2] - self.docks[0])
+        if collided:
+            reward, done = -self.collision_penalty, False
+        elif d < self.dock_radius:
+            reward, done = +self.dock_reward, True
+        else:
+            reward, done = -1.0,         False
+
+        # 6) proximity shaping
         ranges, _, _ = self.sonar.get_readings(
             self.occ_grid, self.refl_grid, self.pose
         )
-        ranges = ranges / self.sonar.max_range
+        min_r = ranges.min()
+        if min_r < self.wall_thresh:
+            reward -= self.wall_penalty_coeff * (1 - min_r/self.wall_thresh)
 
-        # 2) per‐dock [distance (normalized), bearing (sin,cos)]
-        dock_feats = []
-        for dock in self.docks:
-            dx, dy = dock - self.pose[:2]
-            dist = math.hypot(dx, dy) / (math.hypot(*self.grid_size)*self.resolution)
-            ang  = math.atan2(dy, dx) - self.pose[2]
-            dock_feats.extend([dist, math.sin(ang), math.cos(ang)])
+        # 7) progress shaping
+        delta = self._last_dist - d
+        reward += delta * self.progress_coeff
+        self._last_dist = d
 
-        return np.concatenate([
-            ranges.astype(np.float32),
-            np.array(dock_feats, dtype=np.float32)
-        ], axis=0)
+        # 8) turn penalty
+        reward -= self.turn_penalty_coeff * abs(omega)
 
-    def _get_obs(self):
-        # Return either the latest raw obs or the full history stack
+        # 9) next obs
+        raw = get_raw_observation(self)  
         if self.use_history:
-            return np.concatenate(self._history_buffer, axis=0)
+            obs = self.history_buffer.process(raw)
         else:
-            return self._history_buffer[-1].copy()
+            obs = raw.copy()
 
-    def reset(self):
-        H, W = self.grid_size
-
-        # 1) Determine spawn: center or random‐but‐clear
-        if self.start_mode == 'center':
-            x0 = (W/2) * self.resolution
-            y0 = (H/2) * self.resolution
-        else:
-            # convert clearance to grid cells
-            c = int(self.spawn_clearance / self.resolution)
-            frees = np.argwhere(self.occ_grid == 0)
-            # filter to only those free cells whose neighbourhood
-            # of radius c contains no occupied cell
-            good = []
-            for (ry, rx) in frees:
-                y0min = max(0, ry - c)
-                y0max = min(H, ry + c + 1)
-                x0min = max(0, rx - c)
-                x0max = min(W, rx + c + 1)
-                if not self.occ_grid[y0min:y0max, x0min:x0max].any():
-                    good.append((ry, rx))
-            if len(good):
-                ry, rx = good[np.random.randint(len(good))]
-                x0 = (rx + 0.5) * self.resolution
-                y0 = (ry + 0.5) * self.resolution
+        return obs, reward, done, {}
+    
+    
+    def render(self, mode='human'):
+            """
+            mode='human': pop up a window.
+            mode='rgb_array': headless offscreen.
+            """
+            # 1) surface setup
+            if mode == 'human':
+                surf = pygame.display.set_mode(self.window_size)
+            elif mode == 'rgb_array':
+                surf = pygame.Surface(self.window_size)
             else:
-                # fallback to center if no clear spot found
-                x0 = (W/2) * self.resolution
-                y0 = (H/2) * self.resolution
+                raise ValueError("Unsupported render mode")
 
-        # 2) Set heading, flags, history, etc. (rest unchanged)
-        th0 = 0.0
-        self.pose = np.array([x0, y0, th0], dtype=float)
-        self._visited = [False]*len(self.docks)
-        first = self.docks[0]
-        self.pose[2] = math.atan2(first[1]-y0, first[0]-x0)
-        self._last_dist = np.linalg.norm(self.pose[:2] - first)
+            total_w, total_h = self.window_size
+            map_w = 600
+            panel_w = (total_w - map_w) // 2
 
-        # seed history buffer
-        raw0 = self._get_raw_obs()
-        self._history_buffer.clear()
-        for _ in range(self.history_length+1):
-            self._history_buffer.append(raw0.copy())
+            # fill background
+            surf.fill((0, 0, 50))
 
-        return self._get_obs()
+            # 2) draw occupancy map
+            cw = map_w / self.grid_size[1]
+            ch = total_h / self.grid_size[0]
+            for y, x in zip(*np.where(self.occ_grid)):
+                pygame.draw.rect(surf, (100,100,100),
+                                (x*cw, y*ch, cw, ch))
 
-    def step(self, action):
-            # ─── 1) Decode & clip ───────────────────────────────────────
-            if self.discrete_actions:
-                v, omega = self.actions[int(action)]
-            else:
-                v, omega = action
-            v     = float(np.clip(v,      -1.0, 1.0))
-            omega = float(np.clip(omega, -np.pi/4, np.pi/4))
+            # 3) draw docks
+            for idx, dock in enumerate(self.docks):
+                gx = dock[0] / self.resolution * cw
+                gy = dock[1] / self.resolution * ch
+                color = (255,255,0) if not self._visited[idx] else (0,255,255)
+                pygame.draw.circle(surf, color,
+                                (int(gx), int(gy)),
+                                int(self.dock_radius/self.resolution * cw), 2)
 
-            # ─── 2) Propose new pose ────────────────────────────────────
-            old_x, old_y, old_th = self.pose
-            new_th = math.atan2(
-                math.sin(old_th + omega),
-                math.cos(old_th + omega)
-            )
-            new_x = old_x + v * math.cos(new_th)
-            new_y = old_y + v * math.sin(new_th)
+            # 4) draw AUV
+            x_pix = self.pose[0] / self.resolution * cw
+            y_pix = self.pose[1] / self.resolution * ch
+            pygame.draw.circle(surf, (0,255,0),
+                            (int(x_pix), int(y_pix)),
+                            max(3, int(cw*0.5)))
+            # heading line
+            ex = x_pix + 20*math.cos(self.pose[2])
+            ey = y_pix + 20*math.sin(self.pose[2])
+            pygame.draw.line(surf, (0,255,0),
+                            (int(x_pix),int(y_pix)),
+                            (int(ex),int(ey)), 2)
 
-            # ─── 3) Continuous collision check ──────────────────────────
-            dx, dy  = new_x - old_x, new_y - old_y
-            dist    = math.hypot(dx, dy)
-            n_steps = max(1, int(dist / (self.resolution * 0.3)))
-            collided = False
-            for i in range(1, n_steps+1):
-                xi = old_x + dx * (i / n_steps)
-                yi = old_y + dy * (i / n_steps)
-                ci = int(np.clip(xi / self.resolution, 0, self.grid_size[1]-1))
-                ri = int(np.clip(yi / self.resolution, 0, self.grid_size[0]-1))
-                if self.occ_grid[ri, ci]:
-                    collided = True
-                    break
-
-            # ─── 4) Commit pose ─────────────────────────────────────────
-            if collided:
-                # block translation, keep heading
-                self.pose = np.array([old_x, old_y, new_th], dtype=float)
-            else:
-                self.pose = np.array([new_x, new_y, new_th], dtype=float)
-
-            # ─── 5) Base reward & done ──────────────────────────────────
-            d = np.linalg.norm(self.pose[:2] - self.docks[0])
-            if collided:
-                reward, done = self.collision_penalty, False
-            elif d < self.dock_radius:
-                reward, done = +self.dock_reward, True
-            else:
-                reward, done = -1.0,         False
-
-            # ─── 6) Proximity shaping ───────────────────────────────────
-            raw_ranges, _, _ = self.sonar.get_readings(
+            # 5) get sonar readings
+            ranges, _, hit_mask = self.sonar.get_readings(
                 self.occ_grid, self.refl_grid, self.pose
             )
-            min_r = raw_ranges.min()
-            if min_r < self.wall_thresh:
-                reward -= self.wall_penalty_coeff * (1 - min_r/self.wall_thresh)
 
-            # ─── 7) Progress shaping ────────────────────────────────────
-            delta = self._last_dist - d
-            reward += delta * self.progress_coeff
-            self._last_dist = d
+            # 6a) fan‐beam panel
+            sx0 = map_w
+            sw  = panel_w
+            pygame.draw.rect(surf, (20,20,80), (sx0, 0, sw, total_h))
+            bs = sw / len(ranges)
+            for i, (r, hit) in enumerate(zip(ranges, hit_mask)):
+                px = sx0 + (i+0.5)*bs
+                # scale r→vertical position (leave 10px margin)
+                py = total_h - (r/self.sonar.max_range)*(total_h-20) - 10
+                color = (0,200,200) if hit else (50,50,50)
+                radius = 5 if hit else 2
+                pygame.draw.circle(surf, color, (int(px), int(py)), radius)
 
-            # ─── 8) Turn penalty ────────────────────────────────────────
-            reward -= self.turn_penalty_coeff * abs(omega)
+            # 6b) Cartesian panel
+            cx0 = map_w + panel_w
+            cw2 = panel_w
+            ch2 = total_h
+            pygame.draw.rect(surf, (30,30,30), (cx0, 0, cw2, ch2))
+            center_x = cx0 + cw2//2
+            center_y = ch2//2
+            scale = cw2 / self.sonar.max_range
+            for i, (r, rel_ang) in enumerate(zip(ranges, self.sonar.beam_angles)):
+                ang = rel_ang + self.pose[2]
+                dx = r * math.sin(ang)
+                dy = r * math.cos(ang)
+                px = center_x + dx*scale
+                py = center_y - dy*scale
+                color = (255,255,0) if hit_mask[i] else (80,80,80)
+                radius = 4 if hit_mask[i] else 2
+                pygame.draw.circle(surf, color, (int(px), int(py)), radius)
 
-            # ─── 9) Build next obs ──────────────────────────────────────
-            raw = self._get_raw_obs()
-            if self.use_history:
-                self._history_buffer.append(raw.copy())
-                obs = np.concatenate(self._history_buffer, axis=0)
+            # flip or return
+            if mode == 'human':
+                pygame.display.flip()
+                return None
             else:
-                obs = raw
-
-            return obs, reward, done, {}
-
-    def render(self, mode='human'):
-        """
-        If mode=='human', draw to the screen as before.
-        If mode=='rgb_array', draw into an offscreen surface and return an H×W×3 array.
-        """
-        # choose the target surface
-        if mode == 'human':
-            surf = pygame.display.set_mode(self.window_size)
-        elif mode == 'rgb_array':
-            # offscreen surface for headless capture
-            surf = pygame.Surface(self.window_size)
-        else:
-            raise ValueError(f"Unsupported render mode: {mode}")
-
-        surf.fill((0, 0, 50))
-
-        # --- 1) Draw the occupancy map ---
-        map_w = 600
-        total_w, total_h = self.window_size
-        panel_w = (total_w - map_w) // 2
-        cw = map_w / self.grid_size[1]
-        ch = total_h / self.grid_size[0]
-
-        # draw walls
-        for y, x in zip(*np.where(self.occ_grid)):
-            pygame.draw.rect(surf, (100,100,100),
-                             (x*cw, y*ch, cw, ch))
-
-        # draw docks
-        for idx, dock in enumerate(self.docks):
-            gx = dock[0] / self.resolution * cw
-            gy = dock[1] / self.resolution * ch
-            color = (255,255,0) if not self._visited[idx] else (0,255,255)
-            pygame.draw.circle(
-                surf, color,
-                (int(gx), int(gy)),
-                int(self.dock_radius / self.resolution * cw), 2
-            )
-
-        # draw the AUV
-        x_pix = self.pose[0] / self.resolution * cw
-        y_pix = self.pose[1] / self.resolution * ch
-        pygame.draw.circle(surf, (0,255,0), (int(x_pix), int(y_pix)), 5)
-        # heading line
-        ex = x_pix + 20 * math.cos(self.pose[2])
-        ey = y_pix + 20 * math.sin(self.pose[2])
-        pygame.draw.line(surf, (0,255,0),
-                         (int(x_pix), int(y_pix)),
-                         (int(ex), int(ey)), 2)
-
-        # --- 2) Sonar readings for the panels ---
-        # get raw sonar data: we only need ranges and hit_mask here
-        ranges, _, hit_mask = self.sonar.get_readings(
-            self.occ_grid, self.refl_grid, self.pose
-        )
-
-        # 2a) Fan‐beam Sonar Panel
-        sx0 = map_w
-        sw  = panel_w
-        pygame.draw.rect(surf, (20,20,80), (sx0, 0, sw, total_h))
-        bs = sw / len(ranges)
-        for i, (r, hit) in enumerate(zip(ranges, hit_mask)):
-            if not hit: continue
-            px = sx0 + i*bs + bs/2
-            py = total_h - (r/self.sonar.max_range)*(total_h-20)
-            pygame.draw.circle(surf, (0,200,200), (int(px), int(py)), 6)
-
-        # 2b) Cartesian Sonar Display
-        cx0 = map_w + panel_w
-        cw2 = panel_w
-        ch2 = total_h
-        pygame.draw.rect(surf, (30,30,30), (cx0, 0, cw2, ch2))
-        center_x = cx0 + cw2//2
-        center_y = ch2//2
-        scale = cw2 / self.sonar.max_range
-
-        for i, (r, rel_ang) in enumerate(zip(ranges, self.sonar.beam_angles)):
-            dy = r * math.cos(rel_ang)
-            dx = r * math.sin(rel_ang)
-            px = center_x + dx * scale
-            py = center_y - dy * scale
-            col, rad = ((255,255,0), 3) if hit_mask[i] else ((50,50,50), 2)
-            pygame.draw.circle(surf, col, (int(px), int(py)), rad)
-
-        if mode == 'human':
-            pygame.display.flip()
-            return None
-        else:
-            # headless: get RGB array
-            arr = pygame.surfarray.array3d(surf)   # (w, h, 3)
-            return np.transpose(arr, (1, 0, 2))    # (h, w, 3)
+                arr = pygame.surfarray.array3d(surf)   # (w,h,3)
+                return np.transpose(arr, (1,0,2))      # (h,w,3)
 
 
-    def get_cartesian_readings(self):
-        ranges, _, hit_mask = self.sonar.get_readings(self.occ_grid, self.refl_grid, self.pose)
-        angles = self.sonar.beam_angles + self.pose[2]
-        ys = ranges * np.cos(angles)
-        xs = ranges * np.sin(angles)
-        local_pts = np.stack((xs, ys), axis=1)
-        world_pts = local_pts + self.pose[:2]
+

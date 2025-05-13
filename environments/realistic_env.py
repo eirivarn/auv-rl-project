@@ -1,13 +1,10 @@
 import numpy as np
 import math
-from environments.auv_env import simpleAUVEnv
+from environments.auv_env import AUVEnv
 from gym import spaces
 
-class realisticAUVEnv(simpleAUVEnv):
-    """
-    Extends simpleAUVEnv by adding simple Newtonian dynamics, drag, and ocean currents,
-    and supports both discrete strafing actions and continuous 3-DoF thrust.
-    """
+class realisticAUVEnv(AUVEnv):
+
     def __init__(
         self,
         mass: float = 1.0,

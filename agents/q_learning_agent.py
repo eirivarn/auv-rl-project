@@ -3,7 +3,7 @@ import random
 import pickle
 from tqdm import trange
 
-from utils.constants import (
+from utils.grid_constants import (
     DEFAULT_EPSILON_START,
     DEFAULT_EPSILON_END,
     DEFAULT_EPSILON_DECAY,

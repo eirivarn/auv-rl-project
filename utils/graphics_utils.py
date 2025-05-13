@@ -1,7 +1,11 @@
+import cv2
 import matplotlib.pyplot as plt
 from matplotlib import animation
 import matplotlib.patches as patches
 from IPython.display import HTML
+import numpy as np
+import pygame
+from tqdm import trange
 
 def animate_agent_matplotlib(env, agent, max_steps: int = 100, delay: float = 0.1, figsize: tuple = (5,5)):
     agent.epsilon = 0.0
@@ -51,3 +55,75 @@ def animate_agent_matplotlib(env, agent, max_steps: int = 100, delay: float = 0.
     )
     plt.close(fig)
     return HTML(ani.to_jshtml())
+
+def record_pygame_robust(env, agent, out_path='auv.avi', max_steps=200, fps=30):
+    """
+    Robustly record a pygame‐based run of `env` under `agent` to a video file.
+    Handles end-of-episode cleanly by breaking before rendering/capture.
+    """
+    # 1) Initialize Pygame once
+    pygame.init()
+    width, height = env.window_size
+    _ = pygame.display.set_mode((width, height))
+
+    # 2) Video writer
+    fourcc = cv2.VideoWriter_fourcc(*'XVID')
+    writer = cv2.VideoWriter(out_path, fourcc, fps, (width, height))
+    if not writer.isOpened():
+        pygame.quit()
+        raise RuntimeError(f"Cannot open video writer for {out_path}")
+
+    try:
+        agent.epsilon = 0.0
+        state, _ = env.reset()
+        done = False
+
+        for t in trange(max_steps, desc="Recording"):
+            # 3) Step agent first, so we don't render after done
+            idx = agent.select_action(state)
+            state, _, done, _ = env.step(idx)
+            if done:
+                break
+
+            # 4) Handle window events
+            for e in pygame.event.get():
+                if e.type == pygame.QUIT:
+                    done = True
+                    break
+
+            # 5) Render and capture
+            env.render()
+            surf = pygame.display.get_surface()
+            if surf is None:
+                break
+            arr = pygame.surfarray.array3d(surf)  # (w,h,3)
+            frame = cv2.cvtColor(np.transpose(arr, (1,0,2)), cv2.COLOR_RGB2BGR)
+            writer.write(frame)
+
+            # 6) Wait to target FPS
+            pygame.time.wait(int(1000/fps))
+
+    finally:
+        writer.release()
+        pygame.quit()
+
+    print(f"Recording saved to {out_path}")
+
+def record_headless(env, agent, out_path='auv.gif', max_steps=200, fps=10):
+    import imageio
+    frames = []
+    agent.epsilon = 0.0
+    state, _ = env.reset()
+    done = False
+    t = 0
+    while not done and t < max_steps:
+        # render offscreen
+        frame = env.render(mode='rgb_array')
+        frames.append(frame)
+        idx = agent.select_action(state)
+        obs, _, done, _ = env.step(idx)
+        t += 1
+
+    # write GIF
+    imageio.mimsave(out_path, frames, fps=fps)
+    print(f"Headless recording saved to {out_path}")

@@ -18,7 +18,7 @@ class DQNNetwork(nn.Module):
     def forward(self, x):
         return self.net(x)
 
-class SimpleAuvDQNAgent:
+class AuvDQNAgent:
     def __init__(self,
                  env,
                  hidden_dims=[128,128],
@@ -33,9 +33,9 @@ class SimpleAuvDQNAgent:
         self.env = env
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         # sample one obs to get dimension
-        obs0 = env.reset()
+        obs0, _ = env.reset()
         self.input_dim  = obs0.shape[0]
-        self.output_dim = len(env.actions) if env.discrete_actions else env.action_space.n
+        self.output_dim = len(env.actions)
 
         # nets
         self.policy_net = DQNNetwork(self.input_dim, hidden_dims, self.output_dim).to(self.device)
@@ -116,3 +116,12 @@ class SimpleAuvDQNAgent:
         self.policy_net.load_state_dict(ckpt["state_dict"])
         self.target_net.load_state_dict(ckpt["state_dict"])
         self.epsilon = ckpt.get("epsilon", self.epsilon)
+
+    def maybe_update_target(self):
+        """
+        Called every step in training. Once self.step_counter
+        reaches a multiple of self.target_update, sync
+        the target_net from the policy_net.
+        """
+        if self.step_counter % self.target_update == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())

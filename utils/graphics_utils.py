@@ -112,18 +112,29 @@ def record_pygame_robust(env, agent, out_path='auv.avi', max_steps=200, fps=30):
 def record_headless(env, agent, out_path='auv.gif', max_steps=200, fps=10):
     import imageio
     frames = []
+
     agent.epsilon = 0.0
     state, _ = env.reset()
+
     done = False
     t = 0
+    # capture initial frame
+    frames.append(env.render(mode='rgb_array'))
+
     while not done and t < max_steps:
-        # render offscreen
-        frame = env.render(mode='rgb_array')
-        frames.append(frame)
-        idx = agent.select_action(state)
+        # 1) choose action from current state
+        idx   = agent.select_action(state)
+
+        # 2) step the env
         obs, _, done, _ = env.step(idx)
+        state           = obs   # ← **important**
+
+        # 3) render after step so you see the result
+        frames.append(env.render(mode='rgb_array'))
+
         t += 1
 
-    # write GIF
+    # 4) write GIF
     imageio.mimsave(out_path, frames, fps=fps)
     print(f"Headless recording saved to {out_path}")
+

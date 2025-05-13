@@ -183,3 +183,96 @@ def get_cartesian_readings(self):
     local_pts = np.stack((xs, ys), axis=1)
     world_pts = local_pts + self.pose[:2]
 
+def decode_action(action, actions, use_discrete_actions):
+    """
+    Decode and clip raw action into (v, omega).
+    """
+    if use_discrete_actions:
+        v, omega = actions[int(action)]
+    else:
+        v, omega = action
+    v     = float(np.clip(v, -1.0, 1.0))
+    omega = float(np.clip(omega, -np.pi/4, np.pi/4))
+    return v, omega
+
+
+def propose_pose(pose, v, omega):
+    """
+    Compute new pose from old pose and commanded velocities.
+    Returns (old_pose, new_pose).
+    """
+    old_x, old_y, old_th = pose
+    new_th = math.atan2(math.sin(old_th + omega), math.cos(old_th + omega))
+    new_x = old_x + v * math.cos(new_th)
+    new_y = old_y + v * math.sin(new_th)
+    return (old_x, old_y, old_th), (new_x, new_y, new_th)
+
+
+def check_collision(old_pose, new_pose, occ_grid, resolution):
+    """
+    Continuous collision check from old to new pose.
+    Returns True if collision occurs.
+    """
+    ox, oy, _ = old_pose
+    nx, ny, _ = new_pose
+    dx, dy = nx - ox, ny - oy
+    dist = math.hypot(dx, dy)
+    steps = max(1, int(dist / (resolution * 0.3)))
+    for i in range(1, steps + 1):
+        xi = ox + dx * (i/steps)
+        yi = oy + dy * (i/steps)
+        ri = int(np.clip(yi/resolution, 0, occ_grid.shape[0]-1))
+        ci = int(np.clip(xi/resolution, 0, occ_grid.shape[1]-1))
+        if occ_grid[ri, ci]:
+            return True
+    return False
+
+
+def commit_pose(old_pose, new_pose, collided):
+    """
+    Return updated pose array given collision flag.
+    """
+    if collided:
+        ox, oy, _ = old_pose
+        _, _, nth = new_pose
+        return np.array([ox, oy, nth], dtype=float)
+    return np.array(new_pose, dtype=float)
+
+
+def compute_base_reward(pose, docks, dock_radius, collision_penalty, dock_reward):
+    """
+    Compute base reward and done flag.
+    """
+    d = np.linalg.norm(pose[:2] - docks[0])
+    if collision_penalty < 0:
+        # assuming collision_penalty negative sign included
+        return collision_penalty, False
+    if d < dock_radius:
+        return dock_reward, True
+    return -1.0, False
+
+
+def shape_reward(env, reward, omega):
+    """
+    Apply proximity, progress, and turn shaping.
+    """
+    ranges, _, _ = env.sonar.get_readings(env.occ_grid, env.refl_grid, env.pose)
+    min_r = ranges.min()
+    if min_r < env.wall_thresh:
+        reward -= env.wall_penalty_coeff * (1 - min_r/env.wall_thresh)
+    d = np.linalg.norm(env.pose[:2] - env.docks[0])
+    delta = env._last_dist - d
+    reward += delta * env.progress_coeff
+    env._last_dist = d
+    reward -= env.turn_penalty_coeff * abs(omega)
+    return reward
+
+
+def get_next_observation(env):
+    """
+    Retrieve next observation, optionally stacking history.
+    """
+    raw = get_raw_observation(env)
+    if env.use_history:
+        return env.history_buffer.process(raw)
+    return raw.copy()

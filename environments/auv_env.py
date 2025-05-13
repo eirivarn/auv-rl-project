@@ -2,14 +2,14 @@ import numpy as np
 import math
 
 import pygame
-from utils.auv_utils import (
-    SonarSensor,
-    build_maps,
-    build_random_maps,
-    sample_spawn,
-    sample_random_goal,
-    get_raw_observation
 
+
+from utils.auv_utils import (
+    SonarSensor, build_maps, build_random_maps,
+    sample_spawn, sample_random_goal,
+    decode_action, propose_pose, check_collision,
+    commit_pose, compute_base_reward, shape_reward,
+    get_next_observation, get_raw_observation
 )
 from utils.grid_utils import HistoryBuffer
 from utils.auv_constants import (
@@ -151,74 +151,23 @@ class AUVEnv:
         return obs, {}
 
     def step(self, action):
-        # 1) pick v,ω
-        if self.use_discrete_actions:
-            v, omega = self.actions[int(action)]
-        else:
-            v, omega = action
-        v     = float(np.clip(v,      -1.0, 1.0))
-        omega = float(np.clip(omega, -np.pi/4, np.pi/4))
+        v, omega = decode_action(action, self.actions, self.use_discrete_actions)
 
-        # 2) propose
-        old_x, old_y, old_th = self.pose
-        new_th = math.atan2(math.sin(old_th+omega),
-                             math.cos(old_th+omega))
-        new_x = old_x + v * math.cos(new_th)
-        new_y = old_y + v * math.sin(new_th)
+        old_pose, new_pose = propose_pose(self.pose, v, omega)
 
-        # 3) collision
-        dx, dy = new_x-old_x, new_y-old_y
-        n_steps = max(1, int(math.hypot(dx,dy)/(self.resolution*0.3)))
-        collided = False
-        for i in range(1, n_steps+1):
-            xi = old_x + dx*(i/n_steps)
-            yi = old_y + dy*(i/n_steps)
-            ri = int(np.clip(yi/self.resolution, 0, self.grid_size[0]-1))
-            ci = int(np.clip(xi/self.resolution, 0, self.grid_size[1]-1))
-            if self.occ_grid[ri,ci]:
-                collided = True
-                break
+        collided = check_collision(old_pose, new_pose, self.occ_grid, self.resolution)
 
-        # 4) commit
-        if collided:
-            self.pose = np.array([old_x, old_y, new_th], dtype=float)
-        else:
-            self.pose = np.array([new_x, new_y, new_th], dtype=float)
+        self.pose = commit_pose(old_pose, new_pose, collided)
 
-        # 5) reward/done
-        d = np.linalg.norm(self.pose[:2] - self.docks[0])
-        if collided:
-            reward, done = -self.collision_penalty, False
-        elif d < self.dock_radius:
-            reward, done = +self.dock_reward, True
-        else:
-            reward, done = -1.0,         False
-
-        # 6) proximity shaping
-        ranges, _, _ = self.sonar.get_readings(
-            self.occ_grid, self.refl_grid, self.pose
+        reward, done = compute_base_reward(
+            self.pose, self.docks, self.dock_radius,
+            self.collision_penalty, self.dock_reward
         )
-        min_r = ranges.min()
-        if min_r < self.wall_thresh:
-            reward -= self.wall_penalty_coeff * (1 - min_r/self.wall_thresh)
 
-        # 7) progress shaping
-        delta = self._last_dist - d
-        reward += delta * self.progress_coeff
-        self._last_dist = d
+        reward = shape_reward(self, reward, omega)
 
-        # 8) turn penalty
-        reward -= self.turn_penalty_coeff * abs(omega)
-
-        # 9) next obs
-        raw = get_raw_observation(self)  
-        if self.use_history:
-            obs = self.history_buffer.process(raw)
-        else:
-            obs = raw.copy()
-
+        obs = get_next_observation(self)
         return obs, reward, done, {}
-    
     
     def render(self, mode='human'):
             """

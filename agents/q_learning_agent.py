@@ -32,7 +32,7 @@ class QLearningAgent:
         dx_size = maximum_values - minimum_values + 1
         dy_size = maximum_values - minimum_values + 1
 
-        # Initialize Q-table with zeros
+        # Initialize Q-table with zeros ### Testing using random values ### 
         self.q_table = np.zeros((dx_size, dy_size, env.action_space.n))
         
         # ---- Hyperparameters ----

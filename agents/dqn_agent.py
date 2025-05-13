@@ -117,14 +117,12 @@ class DQNAgent:
         batch = random.sample(self.memory, self.batch_size)
         states, actions, rewards, next_states, dones = zip(*batch)
 
-        # stack into numpy arrays for speed
         states_np      = np.array(states,      dtype=np.float32)
         next_states_np = np.array(next_states, dtype=np.float32)
         actions_np     = np.array(actions,     dtype=np.int64)
         rewards_np     = np.array(rewards,     dtype=np.float32)
         dones_np       = np.array(dones,       dtype=np.float32)
 
-        # convert once to torch tensors
         states_tensor      = torch.from_numpy(states_np).to(self.device)
         next_states_tensor = torch.from_numpy(next_states_np).to(self.device)
         actions_tensor     = torch.from_numpy(actions_np).unsqueeze(1).to(self.device)
@@ -192,7 +190,6 @@ def train_dqn(env, agent, episodes=1000, max_steps=100):
         agent.update_epsilon()
         rewards_hist.append(total_reward)
 
-        # Update the bar’s postfix fields
         pbar.set_postfix({
             "Reward": f"{total_reward:.1f}",
             "ε":      f"{agent.epsilon:.3f}"

@@ -129,32 +129,6 @@ class HistoryBuffer:
         self.buffer.append(raw_observations.copy())
         return np.concatenate(self.buffer)
 
-
-def train_dqn(env, agent, episodes=500, max_steps=200):
-    rewards_hist = []
-    pbar = tqdm(range(episodes), desc="DQN Training")
-    for ep in pbar:
-        state, _ = env.reset()
-        total_reward = 0
-        done = False
-
-        for t in range(max_steps):
-            idx = agent.select_action(state)
-            # pass the index directly; step() will handle discrete_actions
-            next_s, reward, done, _ = env.step(idx)
-            agent.store_transition(state, idx, reward, next_s, done)
-            agent.optimize_model()
-            state = next_s
-            total_reward += reward
-            if done:
-                break
-
-        agent.update_epsilon()
-        rewards_hist.append(total_reward)
-        pbar.set_postfix({"Rew": f"{total_reward:.2f}", "ε": f"{agent.epsilon:.3f}"})
-
-    return rewards_hist
-
 def record_pygame_robust(env, agent, out_path='auv.avi', max_steps=200, fps=30):
     """
     Robustly record a pygame‐based run of `env` under `agent` to a video file.

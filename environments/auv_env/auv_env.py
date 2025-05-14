@@ -86,19 +86,45 @@ class AUVEnv:
         self.reset()
 
     def reset(self) -> tuple[np.ndarray, dict]:
-        x0, y0 = sample_spawn(
-            occ_grid=self.occ_grid,
-            resolution=self.resolution,
-            start_mode=self.start_mode,
-            spawn_clearance=self.spawn_clearance
-        )
+        # --- spawn logic (replaces sample_spawn) ---
+        H, W = self.grid_size  # or: H, W = self.occ_grid.shape
+
+        if self.start_mode == 'center':
+            x0 = (W / 2) * self.resolution
+            y0 = (H / 2) * self.resolution
+        else:
+            # clearance in cells
+            c = int(self.spawn_clearance / self.resolution)
+            frees = np.argwhere(self.occ_grid == 0)
+            good = []
+            for ry, rx in frees:
+                y0min = max(0, ry - c)
+                y0max = min(H, ry + c + 1)
+                x0min = max(0, rx - c)
+                x0max = min(W, rx + c + 1)
+                # check neighborhood is free
+                if not self.occ_grid[y0min:y0max, x0min:x0max].any():
+                    good.append((ry, rx))
+
+            if good:
+                ry, rx = good[np.random.randint(len(good))]
+                x0 = (rx + 0.5) * self.resolution
+                y0 = (ry + 0.5) * self.resolution
+            else:
+                # fallback to center
+                x0 = (W / 2) * self.resolution
+                y0 = (H / 2) * self.resolution
+
+        # --- rest of your reset stays the same ---
         self.pose = np.array([x0, y0, 0.0], dtype=float)
         first = self.docks[0]
-        self.pose[2]   = math.atan2(first[1] - y0, first[0] - x0)
-        self._visited  = [False] * len(self.docks)
+        self.pose[2] = math.atan2(first[1] - y0, first[0] - x0)
+
+        self._visited = [False] * len(self.docks)
         self._last_dist = np.linalg.norm(self.pose[:2] - first)
 
-        ranges_and_dock = get_raw_observation(self)  
+        # get the first obs (history or not) exactly as before
+        ranges_and_dock = get_raw_observation(self)
         if self.use_history:
             obs = self.history_buffer.reset(ranges_and_dock)
         else:

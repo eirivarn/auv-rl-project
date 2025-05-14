@@ -117,9 +117,9 @@ class EnhancedDQNAgent:
     ):
         self.env = env
         self.device = device or ('cuda' if torch.cuda.is_available() else 'cpu')
-        obs0 = env.reset()
+        obs0, _ = env.reset()
         self.input_dim  = int(obs0.shape[0])
-        self.n_actions  = env.action_space.n
+        self.n_actions  = len(env.actions)
 
         # networks
         self.policy_net = DuelingDQNNetwork(self.input_dim, hidden_dims, self.n_actions).to(self.device)
@@ -149,7 +149,7 @@ class EnhancedDQNAgent:
 
     def select_action(self, state):
         if random.random() < self.epsilon:
-            return self.env.action_space.sample()
+            return random.randrange(self.n_actions)
         with torch.no_grad():
             st = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
             qv = self.policy_net(st)
@@ -210,6 +210,21 @@ class EnhancedDQNAgent:
             'state_dict': self.policy_net.state_dict(),
             'epsilon': self.epsilon
         }, path)
+
+    def maybe_update_target(self):
+        """
+        Call this once per environment step (or per training step)
+        to sync the target network every `self.target_update` calls.
+        """
+        if self.step_counter % self.target_update == 0:
+            self.target_net.load_state_dict(self.policy_net.state_dict())
+
+    def update_epsilon(self):
+        """
+        Decay epsilon according to epsilon_decay until epsilon_min.
+        Called once per episode by the trainer.
+        """
+        self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
     @classmethod
     def load_from_checkpoint(cls, env, path, hidden_dims, device=None, **kwargs):

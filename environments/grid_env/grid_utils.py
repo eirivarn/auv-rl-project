@@ -6,7 +6,7 @@ import cv2
 import pygame
 from tqdm import trange
 
-from utils.grid_constants import DIRECTIONS
+from environments.grid_env.grid_constants import DIRECTIONS
 
 def move(position: np.ndarray, action:int, grid_size: tuple, obstacles: set) -> np.ndarray:
     x, y = position
@@ -114,18 +114,3 @@ class Lidar:
             lidar_hit_readings.append(readings)
         return np.concatenate([raw_observations, np.array(lidar_hit_readings, dtype=int)])
     
-class HistoryBuffer:
-    def __init__(self, history_length: int):
-        self.history_length = history_length
-        self.buffer = deque(maxlen=history_length+1)
-
-    def reset(self, raw_observations: np.ndarray) -> np.ndarray:
-        self.buffer.clear()
-        for _ in range(self.history_length+1):
-            self.buffer.append(raw_observations.copy())
-        return np.concatenate(self.buffer)
-    
-    def process(self, raw_observations: np.ndarray) -> np.ndarray:
-        self.buffer.append(raw_observations.copy())
-        return np.concatenate(self.buffer)
-

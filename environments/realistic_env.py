@@ -1,6 +1,6 @@
 import numpy as np
 import math
-from environments.auv_env import AUVEnv
+from environments.auv_env.auv_env import AUVEnv
 from gym import spaces
 
 class realisticAUVEnv(AUVEnv):

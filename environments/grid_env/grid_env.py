@@ -6,9 +6,9 @@ from collections import deque
 import gym
 from gym import spaces
 
-from utils.grid_utils import place_obstacles, move, Lidar, HistoryBuffer
+from environments.grid_env.grid_utils import place_obstacles, move, Lidar, HistoryBuffer
 
-from utils.grid_constants import (
+from environments.grid_env.grid_constants import (
     DEFAULT_GRID_SIZE,
     DEFAULT_CELL_SIZE,
     DEFAULT_FPS,

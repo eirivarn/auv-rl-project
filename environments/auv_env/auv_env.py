@@ -1,3 +1,4 @@
+from collections import deque
 import numpy as np
 import math
 
@@ -76,6 +77,8 @@ class AUVEnv:
         self._last_dist = None
         self.pose       = None
 
+        self.action_history = deque(maxlen=self.history_length)
+
         # kickoff first episode
         self.reset()
 
@@ -88,6 +91,7 @@ class AUVEnv:
             self.docks = docks_cfg or [sample_random_goal(self)]
         self._visited = [False] * len(self.docks)
 
+        # 2) spawn the AUV
         x0, y0 = sample_spawn(
             occ_grid=self.occ_grid,
             grid_size=self.grid_size,
@@ -95,42 +99,100 @@ class AUVEnv:
             start_mode=self.start_mode,
             spawn_clearance=self.spawn_clearance
         )
-
         self.pose = np.array([x0, y0, 0.0], dtype=float)
-        
         first = self.docks[0]
         self.pose[2] = math.atan2(first[1] - y0, first[0] - x0)
-
-        self._visited = [False] * len(self.docks)
         self._last_dist = np.linalg.norm(self.pose[:2] - first)
 
-        ranges_and_dock = get_raw_observation(self)
-        if self.use_history:
-            obs = self.history_buffer.reset(ranges_and_dock)
+        # 3) reset action history (zeros = “no‐op”)
+        self.action_history = deque(maxlen=self.history_length)
+        if self.use_discrete_actions:
+            for _ in range(self.history_length):
+                self.action_history.append(0.0)
         else:
-            obs = ranges_and_dock.copy()
+            for _ in range(self.history_length):
+                # store two slots per step
+                self.action_history.extend([0.0, 0.0])
+
+        # 4) build raw‐obs + action‐history
+        ranges, _, hit_mask = self.sonar.get_readings(
+            self.occ_grid, self.refl_grid, self.pose
+        )
+        ranges = ranges / self.sonar.max_range
+        hits   = hit_mask.astype(np.float32)
+        dock_feats = []
+        for dock in self.docks:
+            dx, dy = dock - self.pose[:2]
+            dist = math.hypot(dx, dy) / (math.hypot(*self.grid_size)*self.resolution)
+            ang  = math.atan2(dy, dx) - self.pose[2]
+            dock_feats.extend([dist, math.sin(ang), math.cos(ang)])
+        raw0 = np.concatenate([
+            ranges.astype(np.float32),
+            hits,
+            np.array(dock_feats, dtype=np.float32),
+            np.array(self.action_history, dtype=np.float32)
+        ], axis=0)
+
+        # 5) feed through obs‐history buffer
+        if self.use_history:
+            obs = self.history_buffer.reset(raw0)
+        else:
+            obs = raw0.copy()
 
         return obs, {}
 
+    
     def step(self, action):
+        # 1) decode action
         v, omega = decode_action(action, self.actions, self.use_discrete_actions)
 
+        # 2) record into action history
+        if self.use_discrete_actions:
+            self.action_history.append(float(action))
+        else:
+            self.action_history.extend([v, omega])
+
+        # 3) move & collision
         old_pose, new_pose = propose_pose(self.pose, v, omega)
-
         collided = check_collision(old_pose, new_pose, self.occ_grid, self.resolution)
-
         self.pose = commit_pose(old_pose, new_pose, collided)
 
+        # 4) reward & done
         reward, done = compute_base_reward(
             self.pose, self.docks, self.dock_radius,
             self.collision_penalty, self.dock_reward
         )
-
         reward = shape_reward(self, reward, omega)
 
-        obs = get_next_observation(self)
+        # 5) build new raw obs + action‐history
+        ranges, _, hit_mask = self.sonar.get_readings(
+            self.occ_grid, self.refl_grid, self.pose
+        )
+        ranges = ranges / self.sonar.max_range
+        hits   = hit_mask.astype(np.float32)
+        dock_feats = []
+        for dock in self.docks:
+            dx, dy = dock - self.pose[:2]
+            dist = math.hypot(dx, dy) / (math.hypot(*self.grid_size)*self.resolution)
+            ang  = math.atan2(dy, dx) - self.pose[2]
+            dock_feats.extend([dist, math.sin(ang), math.cos(ang)])
+        raw = np.concatenate([
+            ranges.astype(np.float32),
+            hits,
+            np.array(dock_feats, dtype=np.float32),
+            np.array(self.action_history, dtype=np.float32)
+        ], axis=0)
+
+        # 6) history stacking
+        if self.use_history:
+            obs = self.history_buffer.process(raw)
+        else:
+            obs = raw
+
         return obs, reward, done, {}
+
     
+
     def render(self, mode='human') -> np.ndarray:
             if mode == 'human':
                 surf = pygame.display.set_mode(self.window_size)

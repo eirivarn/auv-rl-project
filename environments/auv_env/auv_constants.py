@@ -42,7 +42,7 @@ DEFAULT_N_BEAMS = 12
 DEFAULT_SONAR_PARAMS = {
     "fov":                np.deg2rad(360),
     "n_beams":            DEFAULT_N_BEAMS,
-    "max_range":          30.0,
+    "max_range":          200.0,
     "resolution":         DEFAULT_RESOLUTION,
     "noise_std":          0.0,
     "compute_intensity":  False,

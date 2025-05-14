@@ -1,4 +1,5 @@
 import math
+from typing import Tuple
 import numpy as np
 import pygame
 
@@ -125,29 +126,50 @@ def sample_random_goal(self):
                         np.random.uniform(0,H*self.resolution)])
 
 
-def sample_spawn(occ_grid: np.ndarray,
-                 resolution: float,
-                 start_mode: str = 'center',
-                 spawn_clearance: float = 1.0) -> tuple[float, float]:
-    H, W = occ_grid.shape
+def center_spawn(grid_size: Tuple[int, int], resolution: float) -> Tuple[float, float]:
+    H, W = grid_size
+    x = (W / 2) * resolution
+    y = (H / 2) * resolution
+    return x, y
 
-    if start_mode == 'center':
-        return (W/2) * resolution, (H/2) * resolution
-
+def random_clear_spawn(
+    occ_grid: np.ndarray,
+    grid_size: Tuple[int, int],
+    resolution: float,
+    spawn_clearance: float
+) -> Tuple[float, float]:
+    H, W = grid_size
     c = int(spawn_clearance / resolution)
     frees = np.argwhere(occ_grid == 0)
-    good = []
+    valid = []
     for ry, rx in frees:
-        y0min, y0max = max(0, ry - c), min(H, ry + c + 1)
-        x0min, x0max = max(0, rx - c), min(W, rx + c + 1)
+        y0min = max(0, ry - c)
+        y0max = min(H, ry + c + 1)
+        x0min = max(0, rx - c)
+        x0max = min(W, rx + c + 1)
         if not occ_grid[y0min:y0max, x0min:x0max].any():
-            good.append((ry, rx))
+            valid.append((ry, rx))
+    if valid:
+        ry, rx = valid[np.random.randint(len(valid))]
+        x = (rx + 0.5) * resolution
+        y = (ry + 0.5) * resolution
+        return x, y
+    # fallback to center
+    return center_spawn(grid_size, resolution)
 
-    if good:
-        ry, rx = good[np.random.randint(len(good))]
-        return (rx + 0.5) * resolution, (ry + 0.5) * resolution
 
-    return (W/2) * resolution, (H/2) * resolution
+def sample_spawn(
+    start_mode: str,
+    occ_grid: np.ndarray,
+    grid_size: Tuple[int, int],
+    resolution: float,
+    spawn_clearance: float = 1.0
+) -> Tuple[float, float]:
+    if start_mode == 'center':
+        return center_spawn(grid_size, resolution)
+    else:
+        return random_clear_spawn(occ_grid, grid_size, resolution, spawn_clearance)
+
 
 def get_raw_observation(self):
     ranges, _, _ = self.sonar.get_readings(

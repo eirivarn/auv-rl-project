@@ -45,14 +45,8 @@ class AUVEnv:
             build_maps(self)
 
         # docks
-        docks = self.cfg.docks
-        if isinstance(docks, int):
-            self.docks = [sample_random_goal(self) for _ in range(docks)]
-        else:
-            self.docks = docks or [sample_random_goal(self)]
         self.dock_radius = self.cfg.dock_radius
         self.dock_reward = self.cfg.dock_reward
-        self._visited    = [False] * len(self.docks)
 
         # sonar sensor
         params = {**DEFAULT_SONAR_PARAMS, **(self.cfg.sonar_params or {})}
@@ -86,6 +80,14 @@ class AUVEnv:
         self.reset()
 
     def reset(self) -> tuple[np.ndarray, dict]:
+        # 1) re‐sample docks in free space
+        docks_cfg = self.cfg.docks
+        if isinstance(docks_cfg, int):
+            self.docks = [sample_random_goal(self) for _ in range(docks_cfg)]
+        else:
+            self.docks = docks_cfg or [sample_random_goal(self)]
+        self._visited = [False] * len(self.docks)
+
         x0, y0 = sample_spawn(
             occ_grid=self.occ_grid,
             grid_size=self.grid_size,
@@ -95,6 +97,7 @@ class AUVEnv:
         )
 
         self.pose = np.array([x0, y0, 0.0], dtype=float)
+        
         first = self.docks[0]
         self.pose[2] = math.atan2(first[1] - y0, first[0] - x0)
 

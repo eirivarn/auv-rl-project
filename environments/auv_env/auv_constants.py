@@ -21,11 +21,11 @@ DEFAULT_USE_DISCRETE_ACTIONS = True
 DEFAULT_USE_DISCRETE_ACTIONS = True
 
 # ---- Rewards, Penalties and Shaping ----
-DEFAULT_DOCK_REWARD = 20.0
+DEFAULT_DOCK_REWARD = 100.0
 DEFAULT_WALL_THRESH = 0.5
 DEFAULT_WALL_PENALTY_COEFF = 2.0
 DEFAULT_COLLISION_PENALTY = 1.0
-DEFAULT_PROGRESS_COEFF = 5.0
+DEFAULT_PROGRESS_COEFF = 3.0
 DEFAULT_TURN_PENALTY_COEFF = 0.5
 
 # ---- Action Space ----
@@ -38,11 +38,11 @@ DEFAULT_DISCRETE_ACTIONS = [
 ]
 
 # ---- Sonar Parameters ----
-DEFAULT_N_BEAMS = 12
+DEFAULT_N_BEAMS = 20
 DEFAULT_SONAR_PARAMS = {
     "fov":                np.deg2rad(360),
     "n_beams":            DEFAULT_N_BEAMS,
-    "max_range":          200.0,
+    "max_range":          10.0,
     "resolution":         DEFAULT_RESOLUTION,
     "noise_std":          0.0,
     "compute_intensity":  False,

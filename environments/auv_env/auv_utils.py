@@ -94,6 +94,12 @@ def build_maps(self):
         self.occ_grid[cy:cy+h,cx:cx+w] = 1
         self.refl_grid[cy:cy+h,cx:cx+w] = np.random.uniform(0.5,1.0,size=(h,w))
 
+    # ── add outer wall ─────────────────────────────────────────
+    self.occ_grid[ 0, :] = 1
+    self.occ_grid[-1, :] = 1
+    self.occ_grid[:,  0] = 1
+    self.occ_grid[:, -1] = 1
+
 def build_random_maps(self):
     H,W = self.grid_size
     grid = (np.random.rand(H,W) < self.map_fill_prob).astype(np.uint8)
@@ -121,9 +127,12 @@ def build_random_maps(self):
     self.refl_grid=np.full((H,W),0.2,dtype=np.float32)
 
 def sample_random_goal(self):
-    H,W=self.grid_size
-    return np.array([np.random.uniform(0,W*self.resolution),
-                        np.random.uniform(0,H*self.resolution)])
+    return random_clear_spawn(
+        self.occ_grid,
+        self.grid_size,
+        self.resolution,
+        getattr(self, 'spawn_clearance', 1.0)
+    )
 
 
 def center_spawn(grid_size: Tuple[int, int], resolution: float) -> Tuple[float, float]:
@@ -233,20 +242,32 @@ def propose_pose(pose, v, omega):
 def check_collision(old_pose, new_pose, occ_grid, resolution):
     """
     Continuous collision check from old to new pose.
-    Returns True if collision occurs.
+    Returns True if collision or out‐of‐bounds occurs.
     """
     ox, oy, _ = old_pose
     nx, ny, _ = new_pose
     dx, dy = nx - ox, ny - oy
     dist = math.hypot(dx, dy)
     steps = max(1, int(dist / (resolution * 0.3)))
+
+    H, W = occ_grid.shape
     for i in range(1, steps + 1):
         xi = ox + dx * (i/steps)
         yi = oy + dy * (i/steps)
-        ri = int(np.clip(yi/resolution, 0, occ_grid.shape[0]-1))
-        ci = int(np.clip(xi/resolution, 0, occ_grid.shape[1]-1))
+
+        # convert to grid‐indices (float)
+        x_idx = xi / resolution
+        y_idx = yi / resolution
+
+        # out‐of‐bounds ⇒ treat as collision
+        if x_idx < 0 or x_idx >= W or y_idx < 0 or y_idx >= H:
+            return True
+
+        ri = int(y_idx)
+        ci = int(x_idx)
         if occ_grid[ri, ci]:
             return True
+
     return False
 
 

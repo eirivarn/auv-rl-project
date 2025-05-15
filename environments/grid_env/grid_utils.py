@@ -50,31 +50,6 @@ def get_observation(self) -> np.ndarray:
         flat.extend(past.tolist())
     return np.array(flat, dtype=int)
 
-def evaluate_agent(env, agent, episodes=100, max_steps=200):
-    agent.epsilon = 0.0
-    successes, steps = 0, []
-
-    for _ in range(episodes):
-        state, _ = env.reset()
-        done, t = False, 0
-        final_reward = None
-
-        while not done and t < max_steps:
-            # select_action returns an int (the action index)
-            idx = agent.select_action(state)
-            state, reward, done, _ = env.step(idx)
-            final_reward = reward
-            t += 1
-
-        # only count it if the terminal reward was positive (dock reached)
-        if final_reward is not None:
-            successes += 1
-            steps.append(t)
-
-    success_rate = successes / episodes
-    avg_steps   = np.mean(steps) if steps else None
-    return success_rate, avg_steps
-
 
 def plot_rewards(rewards, window=10):
     episodes = np.arange(len(rewards))

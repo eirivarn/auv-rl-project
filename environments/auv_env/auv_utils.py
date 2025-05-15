@@ -134,7 +134,6 @@ def sample_random_goal(self):
         getattr(self, 'spawn_clearance', 1.0)
     )
 
-
 def center_spawn(grid_size: Tuple[int, int], resolution: float) -> Tuple[float, float]:
     H, W = grid_size
     x = (W / 2) * resolution

@@ -101,7 +101,7 @@ class EnhancedDQNAgent:
     def __init__(
         self,
         env,
-        hidden_dims=[64,64],
+        hidden_dims=[256, 256],
         lr=1e-3,
         gamma=0.99,
         epsilon_start=1.0,

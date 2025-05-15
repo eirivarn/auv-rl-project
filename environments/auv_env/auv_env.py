@@ -94,8 +94,8 @@ class AUVEnv:
             self.action_space = spaces.Discrete(len(DEFAULT_DISCRETE_ACTIONS))
         else:
             # these limits should match your vehicle’s real bounds
-            max_thrust = getattr(self.cfg, "max_thrust", 1.0)
-            max_torque = getattr(self.cfg, "max_torque", 1.0)
+            max_thrust = getattr(self.cfg, "max_thrust", 0.3)
+            max_torque = getattr(self.cfg, "max_torque", 0.3)
             low  = np.array([-max_thrust, -max_torque], dtype=np.float32)
             high = np.array([ max_thrust,  max_torque], dtype=np.float32)
             self.action_space = spaces.Box(low, high, dtype=np.float32)

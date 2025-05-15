@@ -24,6 +24,10 @@ class AUVEnv:
         # wrap or create config
         self.cfg = cfg or AUVEnvConfig(**cfg_kwargs)
 
+        # how often to rebuild a random map (in resets). 0=never, 1=every reset, etc.
+        self.map_reset_freq = getattr(self.cfg, 'map_reset_freq', 0)
+        self._reset_count   = 0
+
         # unpack config values
         self.grid_size       = self.cfg.grid_size
         self.window_size     = self.cfg.window_size
@@ -143,6 +147,12 @@ class AUVEnv:
 
     
     def step(self, action):
+        self._reset_count += 1
+
+        # if using random maps, and freq>0, time to rebuild?
+        if self.random_map and self.map_reset_freq > 0:
+            if (self._reset_count - 1) % self.map_reset_freq == 0:
+                build_random_maps(self)
         # 1) decode action
         v, omega = decode_action(action, self.actions, self.use_discrete_actions)
 

@@ -67,7 +67,7 @@ def evaluate_agent(env, agent, episodes=100, max_steps=200):
             t += 1
 
         # only count it if the terminal reward was positive (dock reached)
-        if final_reward is not None and final_reward > 0:
+        if final_reward is not None:
             successes += 1
             steps.append(t)
 

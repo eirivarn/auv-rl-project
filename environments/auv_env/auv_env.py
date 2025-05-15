@@ -1,7 +1,7 @@
 from collections import deque
 import numpy as np
 import math
-
+from gym import spaces
 import pygame
 
 from .auv_utils import (
@@ -81,13 +81,25 @@ class AUVEnv:
         self.history_length = self.cfg.history_length
         self.history_buffer = HistoryBuffer(self.history_length + 1)
 
-        # actions
         self.use_discrete_actions = self.cfg.use_discrete_actions
         if self.use_discrete_actions:
+            # only in discrete mode do we need the lookup table
             self.actions = DEFAULT_DISCRETE_ACTIONS.copy()
         else:
+            # no more self.actions in continuous mode
             self.actions = None
-
+        # expose a gym‐style action_space for both modes
+        from gym import spaces
+        if self.use_discrete_actions:
+            self.action_space = spaces.Discrete(len(DEFAULT_DISCRETE_ACTIONS))
+        else:
+            # these limits should match your vehicle’s real bounds
+            max_thrust = getattr(self.cfg, "max_thrust", 1.0)
+            max_torque = getattr(self.cfg, "max_torque", 1.0)
+            low  = np.array([-max_thrust, -max_torque], dtype=np.float32)
+            high = np.array([ max_thrust,  max_torque], dtype=np.float32)
+            self.action_space = spaces.Box(low, high, dtype=np.float32)
+            
         # reward shaping
         self.wall_thresh        = self.cfg.wall_thresh
         self.wall_penalty_coeff = self.cfg.wall_penalty_coeff
@@ -174,13 +186,16 @@ class AUVEnv:
                 build_random_maps(self)
 
         # decode control input
-        thrust, torque = decode_action(action, self.actions, self.use_discrete_actions)
-
-        # record into action history
         if self.use_discrete_actions:
-            self.action_history.append(float(action))
+            # integer index → (v, ω)
+            thrust, torque = decode_action(action, self.actions, True)
         else:
-            self.action_history.extend([thrust, torque])
+            # continuous: expect a 2-vector [v, ω]
+            try:
+                thrust, torque = action
+            except Exception:
+                raise ValueError(f"Expected continuous action (thrust, torque), got {action}")
+
 
         # choose motion model
         if self.use_physics:

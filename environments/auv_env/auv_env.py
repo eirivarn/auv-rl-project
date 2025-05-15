@@ -12,7 +12,7 @@ from .auv_utils import (
     get_next_observation, get_raw_observation
 )
 
-from utils.shared_utils import (HistoryBuffer)
+from utils.shared_utils import HistoryBuffer
 
 from typing import Optional
 from .auv_config import AUVEnvConfig
@@ -24,7 +24,27 @@ class AUVEnv:
         # wrap or create config
         self.cfg = cfg or AUVEnvConfig(**cfg_kwargs)
 
-        # how often to rebuild a random map (in resets). 0=never, 1=every reset, etc.
+        # physics toggle
+        self.use_physics = self.cfg.use_physics
+
+        # physics parameters
+        self.mass      = self.cfg.mass
+        self.drag_coef = self.cfg.drag_coef
+        self.dt        = self.cfg.dt
+
+        # ocean currents
+        cur_params = getattr(self.cfg, 'current_params', None)
+        if cur_params is not None:
+            self.current_enabled = True
+            # allow override keys in config
+            self.cur_strength  = cur_params.get('strength', cur_params.get('current_speed', 0.0))
+            self.cur_period    = cur_params.get('period', 1.0)
+            self.cur_direction = cur_params.get('direction', cur_params.get('current_direction', 0.0))
+            self.cur_noise_std = cur_params.get('noise_std', cur_params.get('current_noise_std', 0.0))
+        else:
+            self.current_enabled = False
+
+        # how often to rebuild a random map (in resets)
         self.map_reset_freq = getattr(self.cfg, 'map_reset_freq', 0)
         self._reset_count   = 0
 
@@ -32,16 +52,14 @@ class AUVEnv:
         self.grid_size       = self.cfg.grid_size
         self.window_size     = self.cfg.window_size
         self.resolution      = self.cfg.resolution
+        self.start_mode      = self.cfg.start_mode
+        self.spawn_clearance = self.cfg.spawn_clearance
 
         self.random_map      = self.cfg.random_map
         self.map_fill_prob   = self.cfg.map_fill_prob
         self.smooth_steps    = self.cfg.smooth_steps
         self.birth_limit     = self.cfg.birth_limit
         self.death_limit     = self.cfg.death_limit
-
-        self.n_beams         = self.cfg.n_beams
-        self.start_mode      = self.cfg.start_mode
-        self.spawn_clearance = self.cfg.spawn_clearance
 
         # build map once
         if self.random_map:
@@ -55,13 +73,13 @@ class AUVEnv:
 
         # sonar sensor
         params = {**DEFAULT_SONAR_PARAMS, **(self.cfg.sonar_params or {})}
-        params.update(n_beams=self.n_beams, resolution=self.resolution)
+        params.update(n_beams=self.cfg.n_beams, resolution=self.resolution)
         self.sonar = SonarSensor(**params)
 
         # history buffer
-        self.use_history     = self.cfg.use_history
-        self.history_length  = self.cfg.history_length
-        self.history_buffer  = HistoryBuffer(self.history_length + 1)
+        self.use_history    = self.cfg.use_history
+        self.history_length = self.cfg.history_length
+        self.history_buffer = HistoryBuffer(self.history_length + 1)
 
         # actions
         self.use_discrete_actions = self.cfg.use_discrete_actions
@@ -78,16 +96,20 @@ class AUVEnv:
         self.turn_penalty_coeff = self.cfg.turn_penalty_coeff
 
         # internal state placeholders
-        self._last_dist = None
-        self.pose       = None
-
+        self._last_dist     = None
+        self.pose           = None
+        self.velocity       = np.zeros(2, dtype=float)
         self.action_history = deque(maxlen=self.history_length)
 
         # kickoff first episode
         self.reset()
 
     def reset(self) -> tuple[np.ndarray, dict]:
-        # 1) re‐sample docks in free space
+        # reset physics state if used
+        if self.use_physics:
+            self.velocity[:] = 0.0
+
+        # 1) re-sample docks in free space
         docks_cfg = self.cfg.docks
         if isinstance(docks_cfg, int):
             self.docks = [sample_random_goal(self) for _ in range(docks_cfg)]
@@ -108,27 +130,26 @@ class AUVEnv:
         self.pose[2] = math.atan2(first[1] - y0, first[0] - x0)
         self._last_dist = np.linalg.norm(self.pose[:2] - first)
 
-        # 3) reset action history (zeros = “no‐op”)
+        # 3) reset action history (zeros = “no-op”)
         self.action_history = deque(maxlen=self.history_length)
         if self.use_discrete_actions:
             for _ in range(self.history_length):
                 self.action_history.append(0.0)
         else:
             for _ in range(self.history_length):
-                # store two slots per step
                 self.action_history.extend([0.0, 0.0])
 
-        # 4) build raw‐obs + action‐history
+        # 4) initial observation build
         ranges, _, hit_mask = self.sonar.get_readings(
             self.occ_grid, self.refl_grid, self.pose
         )
         ranges = ranges / self.sonar.max_range
-        hits   = hit_mask.astype(np.float32)
+        hits = hit_mask.astype(np.float32)
         dock_feats = []
         for dock in self.docks:
             dx, dy = dock - self.pose[:2]
-            dist = math.hypot(dx, dy) / (math.hypot(*self.grid_size)*self.resolution)
-            ang  = math.atan2(dy, dx) - self.pose[2]
+            dist = math.hypot(dx, dy) / (math.hypot(*self.grid_size) * self.resolution)
+            ang = math.atan2(dy, dx) - self.pose[2]
             dock_feats.extend([dist, math.sin(ang), math.cos(ang)])
         raw0 = np.concatenate([
             ranges.astype(np.float32),
@@ -137,7 +158,6 @@ class AUVEnv:
             np.array(self.action_history, dtype=np.float32)
         ], axis=0)
 
-        # 5) feed through obs‐history buffer
         if self.use_history:
             obs = self.history_buffer.reset(raw0)
         else:
@@ -145,36 +165,76 @@ class AUVEnv:
 
         return obs, {}
 
-    
     def step(self, action):
         self._reset_count += 1
 
-        # if using random maps, and freq>0, time to rebuild?
+        # map rebuild if needed
         if self.random_map and self.map_reset_freq > 0:
             if (self._reset_count - 1) % self.map_reset_freq == 0:
                 build_random_maps(self)
-        # 1) decode action
-        v, omega = decode_action(action, self.actions, self.use_discrete_actions)
 
-        # 2) record into action history
+        # decode control input
+        thrust, torque = decode_action(action, self.actions, self.use_discrete_actions)
+
+        # record into action history
         if self.use_discrete_actions:
             self.action_history.append(float(action))
         else:
-            self.action_history.extend([v, omega])
+            self.action_history.extend([thrust, torque])
 
-        # 3) move & collision
-        old_pose, new_pose = propose_pose(self.pose, v, omega)
-        collided = check_collision(old_pose, new_pose, self.occ_grid, self.resolution)
-        self.pose = commit_pose(old_pose, new_pose, collided)
+        # choose motion model
+        if self.use_physics:
+            # physics-based motion
+            force_body = np.array([thrust, 0.0], dtype=float)
+            theta = self.pose[2]
+            cos_t, sin_t = math.cos(theta), math.sin(theta)
+            force_world = np.array([
+                cos_t * force_body[0] - sin_t * force_body[1],
+                sin_t * force_body[0] + cos_t * force_body[1]
+            ])
+            drag_force = -self.drag_coef * self.velocity
 
-        # 4) reward & done
+            vel_current = np.zeros(2)
+            if self.current_enabled:
+                phase = 2 * math.pi * ((self._reset_count * self.dt) / self.cur_period)
+                strength = self.cur_strength * math.sin(phase)
+                vel_current = strength * np.array([
+                    math.cos(self.cur_direction),
+                    math.sin(self.cur_direction)
+                ])
+                # optional noise
+                vel_current += np.random.randn(2) * self.cur_noise_std
+
+            accel = (force_world + drag_force) / self.mass
+            self.velocity += accel * self.dt
+
+            new_pos = self.pose[:2] + (self.velocity + vel_current) * self.dt
+            new_theta = self.pose[2] + (torque / self.mass) * self.dt
+
+            collided = check_collision(
+                np.array([*self.pose[:2], self.pose[2]]),
+                np.array([*new_pos, new_theta]),
+                self.occ_grid, self.resolution
+            )
+            if collided:
+                self.velocity[:] = 0.0
+            else:
+                self.pose[:2] = new_pos
+                self.pose[2]  = new_theta
+        else:
+            # legacy kinematic motion
+            old_pose, new_pose = propose_pose(self.pose, thrust, torque)
+            collided = check_collision(old_pose, new_pose, self.occ_grid, self.resolution)
+            self.pose = commit_pose(old_pose, new_pose, collided)
+
+        # reward & done
         reward, done = compute_base_reward(
             self.pose, self.docks, self.dock_radius,
             self.collision_penalty, self.dock_reward
         )
-        reward = shape_reward(self, reward, omega)
+        reward = shape_reward(self, reward, torque)
 
-        # 5) build new raw obs + action‐history
+        # build observation
         ranges, _, hit_mask = self.sonar.get_readings(
             self.occ_grid, self.refl_grid, self.pose
         )
@@ -183,8 +243,8 @@ class AUVEnv:
         dock_feats = []
         for dock in self.docks:
             dx, dy = dock - self.pose[:2]
-            dist = math.hypot(dx, dy) / (math.hypot(*self.grid_size)*self.resolution)
-            ang  = math.atan2(dy, dx) - self.pose[2]
+            dist = math.hypot(dx, dy) / (math.hypot(*self.grid_size) * self.resolution)
+            ang = math.atan2(dy, dx) - self.pose[2]
             dock_feats.extend([dist, math.sin(ang), math.cos(ang)])
         raw = np.concatenate([
             ranges.astype(np.float32),
@@ -193,7 +253,6 @@ class AUVEnv:
             np.array(self.action_history, dtype=np.float32)
         ], axis=0)
 
-        # 6) history stacking
         if self.use_history:
             obs = self.history_buffer.process(raw)
         else:
@@ -201,86 +260,81 @@ class AUVEnv:
 
         return obs, reward, done, {}
 
-    
-
     def render(self, mode='human') -> np.ndarray:
-            if mode == 'human':
-                surf = pygame.display.set_mode(self.window_size)
-            elif mode == 'rgb_array':
-                surf = pygame.Surface(self.window_size)
-            else:
-                raise ValueError("Unsupported render mode")
+        if mode == 'human':
+            surf = pygame.display.set_mode(self.window_size)
+        elif mode == 'rgb_array':
+            surf = pygame.Surface(self.window_size)
+        else:
+            raise ValueError("Unsupported render mode")
 
-            total_w, total_h = self.window_size
-            map_w = 600
-            panel_w = (total_w - map_w) // 2
+        total_w, total_h = self.window_size
+        map_w = 600
+        panel_w = (total_w - map_w) // 2
 
-            surf.fill((0, 0, 50))
+        surf.fill((0, 0, 50))
 
-            cw = map_w / self.grid_size[1]
-            ch = total_h / self.grid_size[0]
-            for y, x in zip(*np.where(self.occ_grid)):
-                pygame.draw.rect(surf, (100,100,100),
-                                (x*cw, y*ch, cw, ch))
+        cw = map_w / self.grid_size[1]
+        ch = total_h / self.grid_size[0]
+        for y, x in zip(*np.where(self.occ_grid)):
+            pygame.draw.rect(surf, (100,100,100),
+                             (x*cw, y*ch, cw, ch))
 
-            for idx, dock in enumerate(self.docks):
-                gx = dock[0] / self.resolution * cw
-                gy = dock[1] / self.resolution * ch
-                color = (255,255,0) if not self._visited[idx] else (0,255,255)
-                pygame.draw.circle(surf, color,
-                                (int(gx), int(gy)),
-                                int(self.dock_radius/self.resolution * cw), 2)
+        for idx, dock in enumerate(self.docks):
+            gx = dock[0] / self.resolution * cw
+            gy = dock[1] / self.resolution * ch
+            color = (255,255,0) if not self._visited[idx] else (0,255,255)
+            pygame.draw.circle(surf, color,
+                               (int(gx), int(gy)),
+                               int(self.dock_radius/self.resolution * cw), 2)
 
-            x_pix = self.pose[0] / self.resolution * cw
-            y_pix = self.pose[1] / self.resolution * ch
-            pygame.draw.circle(surf, (0,255,0),
-                            (int(x_pix), int(y_pix)),
-                            max(3, int(cw*0.5)))
+        x_pix = self.pose[0] / self.resolution * cw
+        y_pix = self.pose[1] / self.resolution * ch
+        pygame.draw.circle(surf, (0,255,0),
+                           (int(x_pix), int(y_pix)),
+                           max(3, int(cw*0.5)))
 
-            ex = x_pix + 20*math.cos(self.pose[2])
-            ey = y_pix + 20*math.sin(self.pose[2])
-            pygame.draw.line(surf, (0,255,0),
-                            (int(x_pix),int(y_pix)),
-                            (int(ex),int(ey)), 2)
+        ex = x_pix + 20*math.cos(self.pose[2])
+        ey = y_pix + 20*math.sin(self.pose[2])
+        pygame.draw.line(surf, (0,255,0),
+                         (int(x_pix),int(y_pix)),
+                         (int(ex),int(ey)), 2)
 
-            ranges, _, hit_mask = self.sonar.get_readings(
-                self.occ_grid, self.refl_grid, self.pose
-            )
+        ranges, _, hit_mask = self.sonar.get_readings(
+            self.occ_grid, self.refl_grid, self.pose
+        )
 
-            sx0 = map_w
-            sw  = panel_w
-            pygame.draw.rect(surf, (20,20,80), (sx0, 0, sw, total_h))
-            bs = sw / len(ranges)
-            for i, (r, hit) in enumerate(zip(ranges, hit_mask)):
-                px = sx0 + (i+0.5)*bs
-                py = total_h - (r/self.sonar.max_range)*(total_h-20) - 10
-                color = (0,200,200) if hit else (50,50,50)
-                radius = 5 if hit else 2
-                pygame.draw.circle(surf, color, (int(px), int(py)), radius)
+        sx0 = map_w
+        sw  = panel_w
+        pygame.draw.rect(surf, (20,20,80), (sx0, 0, sw, total_h))
+        bs = sw / len(ranges)
+        for i, (r, hit) in enumerate(zip(ranges, hit_mask)):
+            px = sx0 + (i+0.5)*bs
+            py = total_h - (r/self.sonar.max_range)*(total_h-20) - 10
+            color = (0,200,200) if hit else (50,50,50)
+            radius = 5 if hit else 2
+            pygame.draw.circle(surf, color, (int(px), int(py)), radius)
 
-            cx0 = map_w + panel_w
-            cw2 = panel_w
-            ch2 = total_h
-            pygame.draw.rect(surf, (30,30,30), (cx0, 0, cw2, ch2))
-            center_x = cx0 + cw2//2
-            center_y = ch2//2
-            scale = cw2 / self.sonar.max_range
-            for i, (r, rel_ang) in enumerate(zip(ranges, self.sonar.beam_angles)):
-                ang = rel_ang + self.pose[2]
-                dx = r * math.sin(ang)
-                dy = r * math.cos(ang)
-                px = center_x + dx*scale
-                py = center_y - dy*scale
-                color = (255,255,0) if hit_mask[i] else (80,80,80)
-                radius = 4 if hit_mask[i] else 2
-                pygame.draw.circle(surf, color, (int(px), int(py)), radius)
+        cx0 = map_w + panel_w
+        cw2 = panel_w
+        ch2 = total_h
+        pygame.draw.rect(surf, (30,30,30), (cx0, 0, cw2, ch2))
+        center_x = cx0 + cw2//2
+        center_y = ch2//2
+        scale = cw2 / self.sonar.max_range
+        for i, (r, rel_ang) in enumerate(zip(ranges, self.sonar.beam_angles)):
+            ang = rel_ang + self.pose[2]
+            dx = r * math.sin(ang)
+            dy = r * math.cos(ang)
+            px = center_x + dx*scale
+            py = center_y - dy*scale
+            color = (255,255,0) if hit_mask[i] else (80,80,80)
+            radius = 4 if hit_mask[i] else 2
+            pygame.draw.circle(surf, color, (int(px), int(py)), radius)
 
-            if mode == 'human':
-                pygame.display.flip()
-                return None
-            else:
-                arr = pygame.surfarray.array3d(surf)   # (w,h,3)
-                return np.transpose(arr, (1,0,2))      # (h,w,3)
-
-
-
+        if mode == 'human':
+            pygame.display.flip()
+            return None
+        else:
+            arr = pygame.surfarray.array3d(surf)
+            return np.transpose(arr, (1,0,2))

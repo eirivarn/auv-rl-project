@@ -28,6 +28,17 @@ DEFAULT_COLLISION_PENALTY = 5.0
 DEFAULT_PROGRESS_COEFF = 3.0
 DEFAULT_TURN_PENALTY_COEFF = 30.0
 
+# ---- Physics ----
+DEFAULT_USE_PHYSICS = False
+DEFAULT_MASS = 1.0
+DEFAULT_DRAG_COEF = 0.1
+DEFAULT_DT = 0.1
+DEFAULT_CURRENT_PARAMS = {
+    "current_speed": 0.0,
+    "current_direction": 0.0,
+    "current_noise_std": 0.0,
+}
+
 # ---- Action Space ----
 DEFAULT_DISCRETE_ACTIONS = [
     (0.3,  0.0),  # forward

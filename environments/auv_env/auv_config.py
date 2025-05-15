@@ -1,5 +1,3 @@
-# config.py
-
 from dataclasses import dataclass, field
 from typing import List, Optional, Union
 
@@ -34,6 +32,13 @@ from .auv_constants import (
 
     DEFAULT_USE_DISCRETE_ACTIONS,
     DEFAULT_DISCRETE_ACTIONS,
+
+    # physics defaults
+    DEFAULT_USE_PHYSICS,
+    DEFAULT_MASS,
+    DEFAULT_DRAG_COEF,
+    DEFAULT_DT,
+    DEFAULT_CURRENT_PARAMS,
 )
 
 @dataclass
@@ -77,6 +82,17 @@ class AUVEnvConfig:
     # action space
     use_discrete_actions: bool = DEFAULT_USE_DISCRETE_ACTIONS
     discrete_actions: Optional[List] = field(init=False)
+
+    # enable physics model
+    use_physics: bool = DEFAULT_USE_PHYSICS
+
+    # physics parameters
+    mass: float = DEFAULT_MASS
+    drag_coef: float = DEFAULT_DRAG_COEF
+    dt: float = DEFAULT_DT
+
+    # current parameters (mutable default via factory)
+    current_params: dict = field(default_factory=lambda: DEFAULT_CURRENT_PARAMS.copy())
 
     def __post_init__(self):
         # initialize discrete actions if needed

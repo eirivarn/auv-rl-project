@@ -67,10 +67,6 @@ class AUVEnv:
         else:
             build_maps(self)
 
-        # docks
-        self.dock_radius = self.cfg.dock_radius
-        self.dock_reward = self.cfg.dock_reward
-
         # sonar sensor
         params = {**DEFAULT_SONAR_PARAMS, **(self.cfg.sonar_params or {})}
         params.update(n_beams=self.cfg.n_beams, resolution=self.resolution)
@@ -94,18 +90,14 @@ class AUVEnv:
             self.action_space = spaces.Discrete(len(DEFAULT_DISCRETE_ACTIONS))
         else:
             # these limits should match your vehicle’s real bounds
-            max_thrust = getattr(self.cfg, "max_thrust", 0.3)
-            max_torque = getattr(self.cfg, "max_torque", 0.3)
+            max_thrust = getattr(self.cfg, "max_thrust", 0.1)
+            max_torque = getattr(self.cfg, "max_torque", 0.1)
             low  = np.array([-max_thrust, -max_torque], dtype=np.float32)
             high = np.array([ max_thrust,  max_torque], dtype=np.float32)
             self.action_space = spaces.Box(low, high, dtype=np.float32)
             
-        # reward shaping
-        self.wall_thresh        = self.cfg.wall_thresh
-        self.wall_penalty_coeff = self.cfg.wall_penalty_coeff
-        self.collision_penalty  = self.cfg.collision_penalty
-        self.progress_coeff     = self.cfg.progress_coeff
-        self.turn_penalty_coeff = self.cfg.turn_penalty_coeff
+        self.dock_radius = self.cfg.dock_radius
+        self.wall_thresh = self.cfg.wall_thresh
 
         # internal state placeholders
         self._last_dist     = None
@@ -242,12 +234,51 @@ class AUVEnv:
             collided = check_collision(old_pose, new_pose, self.occ_grid, self.resolution)
             self.pose = commit_pose(old_pose, new_pose, collided)
 
-        # reward & done
+        # reward & done (mode-specific)
+        # --- sparse dock & collision penalty ---
+        if self.use_discrete_actions:
+            dock_r   = self.cfg.discrete_dock_reward
+            coll_pen = self.cfg.discrete_collision_penalty
+        else:
+            dock_r   = self.cfg.continuous_dock_reward
+            coll_pen = self.cfg.continuous_collision_penalty
+
         reward, done = compute_base_reward(
             self.pose, self.docks, self.dock_radius,
-            self.collision_penalty, self.dock_reward
+            coll_pen, dock_r
         )
-        reward = shape_reward(self, reward, torque)
+
+        # --- step cost ---
+        step_c = (self.cfg.discrete_step_cost
+                if self.use_discrete_actions
+                else self.cfg.continuous_step_cost)
+        reward += step_c
+
+        # --- wall proximity penalty ---
+        ranges, _, _ = self.sonar.get_readings(self.occ_grid,
+                                            self.refl_grid,
+                                            self.pose)
+        min_r = ranges.min() / self.sonar.max_range
+        wall_c = (self.cfg.discrete_wall_penalty_coeff
+                if self.use_discrete_actions
+                else self.cfg.continuous_wall_penalty_coeff)
+        if min_r < self.wall_thresh:
+            reward -= wall_c * (1 - min_r / self.wall_thresh)
+
+        # --- progress reward ---
+        d_new = np.linalg.norm(self.pose[:2] - self.docks[0])
+        delta = self._last_dist - d_new
+        prog_c = (self.cfg.discrete_progress_coeff
+                if self.use_discrete_actions
+                else self.cfg.continuous_progress_coeff)
+        reward += prog_c * delta
+        self._last_dist = d_new
+
+        # --- turn penalty ---
+        turn_c = (self.cfg.discrete_turn_penalty_coeff
+                if self.use_discrete_actions
+                else self.cfg.continuous_turn_penalty_coeff)
+        reward -= turn_c * abs(torque)
 
         # build observation
         ranges, _, hit_mask = self.sonar.get_readings(

@@ -46,9 +46,10 @@ from .auv_constants import (
     DEFAULT_DT,
     DEFAULT_CURRENT_PARAMS,
 
-    # actions
     DEFAULT_USE_DISCRETE_ACTIONS,
     DEFAULT_DISCRETE_ACTIONS,
+    DEFAULT_MAX_THRUST,
+    DEFAULT_MAX_TORQUE,
 )
 
 @dataclass
@@ -101,9 +102,11 @@ class AUVEnvConfig:
     start_mode: str = DEFAULT_START_MODE
     spawn_clearance: float = DEFAULT_SPAWN_CLEARANCE
 
-    # action space
+    # action 
     use_discrete_actions: bool = DEFAULT_USE_DISCRETE_ACTIONS
     discrete_actions: Optional[List] = field(init=False)
+    max_thrust: float = DEFAULT_MAX_THRUST
+    max_torque: float = DEFAULT_MAX_TORQUE
 
     # physics
     use_physics: bool = DEFAULT_USE_PHYSICS

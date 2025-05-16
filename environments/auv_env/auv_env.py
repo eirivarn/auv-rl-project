@@ -85,15 +85,13 @@ class AUVEnv:
             # no more self.actions in continuous mode
             self.actions = None
         # expose a gym‐style action_space for both modes
-        from gym import spaces
         if self.use_discrete_actions:
             self.action_space = spaces.Discrete(len(DEFAULT_DISCRETE_ACTIONS))
         else:
             # these limits should match your vehicle’s real bounds
-            max_thrust = getattr(self.cfg, "max_thrust", 0.1)
-            max_torque = getattr(self.cfg, "max_torque", 0.1)
-            low  = np.array([-max_thrust, -max_torque], dtype=np.float32)
-            high = np.array([ max_thrust,  max_torque], dtype=np.float32)
+            
+            low  = np.array([-self.cfg.max_thrust, -self.cfg.max_torque], dtype=np.float32)
+            high = np.array([ self.cfg.max_thrust,  self.cfg.max_torque], dtype=np.float32)
             self.action_space = spaces.Box(low, high, dtype=np.float32)
             
         self.dock_radius = self.cfg.dock_radius
@@ -170,13 +168,6 @@ class AUVEnv:
         return obs, {}
 
     def step(self, action):
-        self._reset_count += 1
-
-        # map rebuild if needed
-        if self.random_map and self.map_reset_freq > 0:
-            if (self._reset_count - 1) % self.map_reset_freq == 0:
-                build_random_maps(self)
-
         # decode control input
         if self.use_discrete_actions:
             # integer index → (v, ω)

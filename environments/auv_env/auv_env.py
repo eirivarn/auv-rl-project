@@ -89,7 +89,6 @@ class AUVEnv:
             self.action_space = spaces.Discrete(len(DEFAULT_DISCRETE_ACTIONS))
         else:
             # these limits should match your vehicle’s real bounds
-            
             low  = np.array([-self.cfg.max_thrust, -self.cfg.max_torque], dtype=np.float32)
             high = np.array([ self.cfg.max_thrust,  self.cfg.max_torque], dtype=np.float32)
             self.action_space = spaces.Box(low, high, dtype=np.float32)
@@ -227,17 +226,20 @@ class AUVEnv:
 
         # reward & done (mode-specific)
         # --- sparse dock & collision penalty ---
-        if self.use_discrete_actions:
-            dock_r   = self.cfg.discrete_dock_reward
-            coll_pen = self.cfg.discrete_collision_penalty
-        else:
-            dock_r   = self.cfg.continuous_dock_reward
-            coll_pen = self.cfg.continuous_collision_penalty
 
-        reward, done = compute_base_reward(
-            self.pose, self.docks, self.dock_radius,
-            coll_pen, dock_r
-        )
+        reward = 0.0
+        done = False
+
+        
+        if self.use_discrete_actions:
+            dock_reward   = self.cfg.discrete_dock_reward
+        else:
+            dock_reward   = self.cfg.continuous_dock_reward
+
+        d = np.linalg.norm(self.pose[:2] - self.docks[0])
+        if d < self.dock_radius:
+             reward += dock_reward
+             done = True
 
         # --- step cost ---
         step_c = (self.cfg.discrete_step_cost

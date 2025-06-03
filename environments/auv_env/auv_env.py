@@ -90,11 +90,9 @@ class AUVEnv(gym.Env):
         # Discrete vs. continuous actions
         self.use_discrete_actions = self.cfg.use_discrete_actions
         if self.use_discrete_actions:
-            # Discrete actions: index into a fixed list of (thrust, torque)
             self.actions = DEFAULT_DISCRETE_ACTIONS.copy()
             self.action_space = spaces.Discrete(len(self.actions))
         else:
-            # Continuous actions: thrust ∈ [–max_thrust, max_thrust], torque ∈ [–max_torque, max_torque]
             self.actions = None
             low  = np.array([-self.cfg.max_thrust, -self.cfg.max_torque], dtype=np.float32)
             high = np.array([ self.cfg.max_thrust,  self.cfg.max_torque], dtype=np.float32)
@@ -110,24 +108,14 @@ class AUVEnv(gym.Env):
         self.velocity       = np.zeros(2, dtype=float)
         self.action_history = deque(maxlen=self.history_length)
 
-        # Initialize observation_space to None; we’ll set it on first reset()
         self.observation_space = None
 
-        # Kick off first episode to define obs dims
         self.reset()
 
     def _build_observation_space(self, sample_obs: np.ndarray):
-        """
-        Called once at the end of the very first reset(), after we see the shape
-        of a “processed” observation. We then set self.observation_space accordingly.
-        """
-        obs_dim = sample_obs.shape[0]
-        # Because sonar ranges ∈ [0, 1], hits ∈ {0,1}, dock‐features ∈ [0,1]∪[−1,1], action_history ∈ [action bounds],
-        # and if use_history=True we stack N of those, we can conservatively set:
+        obs_dim = sample_obs.shape[0]     
         low  = -np.ones(obs_dim, dtype=np.float32) * np.inf
         high =  np.ones(obs_dim, dtype=np.float32) * np.inf
-        # In practice, sonar ranges/hits are clipped inside [0,1], sin/cos ∈ [−1,1], action indices ∈ [0, N−1],
-        # but to keep things simple we allow unbounded floats here.
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
     def reset(self):
@@ -164,7 +152,7 @@ class AUVEnv(gym.Env):
         self.pose[2] = math.atan2(first[1] - y0, first[0] - x0)
         self._last_dist = np.linalg.norm(self.pose[:2] - first)
 
-        # 4) Reset action history (zeros = “no-op”)
+        # 4) Reset action history
         self.action_history.clear()
         if self.use_discrete_actions:
             for _ in range(self.history_length):
@@ -195,20 +183,17 @@ class AUVEnv(gym.Env):
             np.array(self.action_history, dtype=np.float32)
         ], axis=0)
 
-        # 6) If history stacking is enabled, fill buffer and get stacked obs
         if self.use_history:
             obs = self.history_buffer.reset(raw0)
         else:
             obs = raw0.copy()
 
-        # 7) If observation_space not yet defined, build it now
         if self.observation_space is None:
             self._build_observation_space(obs)
 
         return obs, {}
 
     def step(self, action):
-        # 1) Decode control input
         if self.use_discrete_actions:
             thrust, torque = decode_action(action, self.actions, True)
         else:
@@ -217,9 +202,7 @@ class AUVEnv(gym.Env):
             except Exception:
                 raise ValueError(f"Expected continuous action (thrust, torque), got {action}")
 
-        # 2) Motion model (physics or kinematic)
         if self.use_physics:
-            # --- physics-based motion ---
             force_body = np.array([thrust, 0.0], dtype=float)
             theta = self.pose[2]
             cos_t, sin_t = math.cos(theta), math.sin(theta)
@@ -256,12 +239,10 @@ class AUVEnv(gym.Env):
                 self.pose[2]  = new_theta
 
         else:
-            # --- legacy kinematic motion ---
             old_pose, new_pose = propose_pose(self.pose, thrust, torque)
             collided = check_collision(old_pose, new_pose, self.occ_grid, self.resolution)
             self.pose = commit_pose(old_pose, new_pose, collided)
 
-        # 3) Compute reward & done
         reward = 0.0
         done = False
 
@@ -306,7 +287,6 @@ class AUVEnv(gym.Env):
                   else self.cfg.continuous_turn_penalty_coeff)
         reward -= turn_c * abs(torque)
 
-        # 4) Build raw observation
         ranges, _, hit_mask = self.sonar.get_readings(
             self.occ_grid, self.refl_grid, self.pose
         )
@@ -327,7 +307,6 @@ class AUVEnv(gym.Env):
             np.array(self.action_history, dtype=np.float32)
         ], axis=0)
 
-        # 5) Update history buffer (if enabled) and produce final obs
         if self.use_history:
             obs = self.history_buffer.process(raw)
         else:

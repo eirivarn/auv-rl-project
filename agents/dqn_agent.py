@@ -58,7 +58,6 @@ class DQNAgent:
         self.env = env
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        # ─── Network dimensions dynamically from env.reset() ─────────────────────
         reset_out = env.reset()
         if isinstance(reset_out, tuple):
             sample_obs, _ = reset_out
@@ -67,31 +66,25 @@ class DQNAgent:
         self.input_dim  = int(sample_obs.shape[0])
         self.output_dim = env.action_space.n
 
-        # ─── Build policy & target networks ─────────────────────────────────────
         self.policy_net = DQNNetwork(self.input_dim, hidden_dims, self.output_dim).to(self.device)
         self.target_net = DQNNetwork(self.input_dim, hidden_dims, self.output_dim).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
-        # ─── Optimizer & loss ─────────────────────────────────────────────────────
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         self.criterion = nn.MSELoss()
         self.gamma = gamma
 
-        # ─── ε-greedy parameters ─────────────────────────────────────────────────
         self.epsilon       = epsilon_start
         self.epsilon_min   = epsilon_min
         self.epsilon_decay = epsilon_decay
 
-        # ─── Replay buffer ────────────────────────────────────────────────────────
         self.memory     = deque(maxlen=buffer_size)
         self.batch_size = batch_size
 
-        # ─── Target-update frequency & counters ──────────────────────────────────
         self.target_update = target_update
         self.step_counter  = 0
 
-        # ─── Tracking rewards per episode ────────────────────────────────────────
         self.rewards_history: list[float] = []
 
     def select_action(self, state: np.ndarray) -> int:

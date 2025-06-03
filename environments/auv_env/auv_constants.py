@@ -19,7 +19,7 @@ DEFAULT_DEATH_LIMIT = 4
 DEFAULT_USE_DISCRETE_ACTIONS = True
 DEFAULT_DT = 0.1
 
-# ---- Rewards, Penalties and Shaping (per mode) ----
+# ---- Rewards, Penalties and Shaping ----
 # Sparse dock reward (event-based, same for both)
 DEFAULT_DISCRETE_DOCK_REWARD    = 500.0
 DEFAULT_CONTINUOUS_DOCK_REWARD  = 10000.0

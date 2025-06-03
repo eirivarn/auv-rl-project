@@ -31,17 +31,13 @@ class QLearningAgent:
         
         self.env = env
 
-        # Q-table dimensions: [dx_range x dy_range x actions] = [n_states, n_actions]
-        # Minimum and maximum values for the observation space
         minimum_values = env.observation_space.low[0]
         maximum_values = env.observation_space.high[0]
         dx_size = maximum_values - minimum_values + 1
         dy_size = maximum_values - minimum_values + 1
 
-        # Initialize Q-table with zeros ### Testing using random values ### 
         self.q_table = np.zeros((dx_size, dy_size, env.action_space.n))
         
-        # ---- Hyperparameters ----
         self.alpha = alpha
         self.gamma = gamma
         self.epsilon = epsilon
@@ -50,7 +46,6 @@ class QLearningAgent:
         self.rewards_history = []
 
     def state_to_index(self, obs) -> tuple:
-        # shift by low to index into table
         dx_idx = obs[0] - self.env.observation_space.low[0]
         dy_idx = obs[1] - self.env.observation_space.low[1]
         return dx_idx, dy_idx
@@ -133,5 +128,4 @@ class QLearningAgent:
             pickle.dump(self.q_table, f)
 
     def load(self, filepath: str):
-            """Load Q-table from a .npy file (allow pickled data)."""
             self.q_table = np.load(filepath, allow_pickle=True)

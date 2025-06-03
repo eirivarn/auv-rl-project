@@ -44,7 +44,6 @@ def get_raw_observation(self) -> np.ndarray:
 def get_observation(self) -> np.ndarray:
     if not self.use_history:
         return self._get_raw_obs()
-    # otherwise flatten the history buffer
     flat = []
     for past in self._history_buffer:
         flat.extend(past.tolist())

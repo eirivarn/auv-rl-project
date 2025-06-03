@@ -94,7 +94,6 @@ class GridEnv(gym.Env):
                                             dtype=np.int32)
 
     def reset(self) -> tuple:
-
         if self.spawn_mode == 'static':
             self.agent_position = self.static_agent_start.copy()
             self.goal_position  = self.static_goal_start.copy()

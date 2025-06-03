@@ -1,8 +1,6 @@
 import math
 from typing import Tuple
 import numpy as np
-import pygame
-
 
 class SonarSensor:
     def __init__(self,
@@ -34,10 +32,8 @@ class SonarSensor:
         hit_mask = np.zeros(self.n_beams, dtype=bool)
         intensities = np.zeros(self.n_beams) if self.compute_intensity else None
 
-        # iterate each beam
         for i, rel_ang in enumerate(self.beam_angles):
             ang = heading + rel_ang
-            # start at one resolution step outwards to avoid self‐collision
             r_vals = np.arange(self.resolution,
                             self.max_range + self.resolution/2,
                             self.resolution)
@@ -46,12 +42,9 @@ class SonarSensor:
                 yi = y + r * math.sin(ang)
                 gi = int(yi / self.resolution)
                 gj = int(xi / self.resolution)
-                # out of bounds? stop this beam
                 if gi < 0 or gi >= H or gj < 0 or gj >= W:
                     break
-                # hit obstacle
                 if occ_grid[gi, gj]:
-                    # record noisy range, mark hit
                     ranges[i] = r + np.random.normal(0, self.noise_std)
                     hit_mask[i] = True
                     if self.compute_intensity:
@@ -93,7 +86,7 @@ def build_maps(self):
         self.occ_grid[cy:cy+h,cx:cx+w] = 1
         self.refl_grid[cy:cy+h,cx:cx+w] = np.random.uniform(0.5,1.0,size=(h,w))
 
-    # ── add outer wall ─────────────────────────────────────────
+    # ── add outer wall ───
     self.occ_grid[ 0, :] = 1
     self.occ_grid[-1, :] = 1
     self.occ_grid[:,  0] = 1
@@ -161,7 +154,6 @@ def random_clear_spawn(
         x = (rx + 0.5) * resolution
         y = (ry + 0.5) * resolution
         return x, y
-    # fallback to center
     return center_spawn(grid_size, resolution)
 
 
@@ -212,9 +204,6 @@ def get_cartesian_readings(self):
     world_pts = local_pts + self.pose[:2]
 
 def decode_action(action, actions, use_discrete_actions):
-    """
-    Decode and clip raw action into (v, omega).
-    """
     if use_discrete_actions:
         v, omega = actions[int(action)]
     else:
@@ -225,10 +214,6 @@ def decode_action(action, actions, use_discrete_actions):
 
 
 def propose_pose(pose, v, omega):
-    """
-    Compute new pose from old pose and commanded velocities.
-    Returns (old_pose, new_pose).
-    """
     old_x, old_y, old_th = pose
     new_th = math.atan2(math.sin(old_th + omega), math.cos(old_th + omega))
     new_x = old_x + v * math.cos(new_th)
@@ -237,10 +222,6 @@ def propose_pose(pose, v, omega):
 
 
 def check_collision(old_pose, new_pose, occ_grid, resolution):
-    """
-    Continuous collision check from old to new pose.
-    Returns True if collision or out‐of‐bounds occurs.
-    """
     ox, oy, _ = old_pose
     nx, ny, _ = new_pose
     dx, dy = nx - ox, ny - oy
@@ -252,11 +233,9 @@ def check_collision(old_pose, new_pose, occ_grid, resolution):
         xi = ox + dx * (i/steps)
         yi = oy + dy * (i/steps)
 
-        # convert to grid‐indices (float)
         x_idx = xi / resolution
         y_idx = yi / resolution
 
-        # out‐of‐bounds ⇒ treat as collision
         if x_idx < 0 or x_idx >= W or y_idx < 0 or y_idx >= H:
             return True
 
@@ -269,9 +248,6 @@ def check_collision(old_pose, new_pose, occ_grid, resolution):
 
 
 def commit_pose(old_pose, new_pose, collided):
-    """
-    Return updated pose array given collision flag.
-    """
     if collided:
         ox, oy, _ = old_pose
         _, _, nth = new_pose
@@ -280,12 +256,8 @@ def commit_pose(old_pose, new_pose, collided):
 
 
 def compute_base_reward(pose, docks, dock_radius, collision_penalty, dock_reward):
-    """
-    Compute base reward and done flag.
-    """
     d = np.linalg.norm(pose[:2] - docks[0])
     if collision_penalty < 0:
-        # assuming collision_penalty negative sign included
         return collision_penalty, False
     if d < dock_radius:
         return dock_reward, True
@@ -293,9 +265,6 @@ def compute_base_reward(pose, docks, dock_radius, collision_penalty, dock_reward
 
 
 def shape_reward(env, reward, omega):
-    """
-    Apply proximity, progress, and turn shaping.
-    """
     ranges, _, _ = env.sonar.get_readings(env.occ_grid, env.refl_grid, env.pose)
     min_r = ranges.min()
     if min_r < env.wall_thresh:
@@ -309,9 +278,6 @@ def shape_reward(env, reward, omega):
 
 
 def get_next_observation(env):
-    """
-    Retrieve next observation, optionally stacking history.
-    """
     raw = get_raw_observation(env)
     if env.use_history:
         return env.history_buffer.process(raw)

@@ -144,29 +144,24 @@ class TD3Agent:
         self.env = env
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        # ─── Infer dims from environment ─────────────────────────────────────────
         obs, *_ = env.reset()
         state_dim  = obs.shape[0]
         action_dim = env.action_space.shape[0]
         max_action = float(env.action_space.high[0])
 
-        # ─── Actor networks ────────────────────────────────────────────────────
         self.actor = Actor(state_dim, action_dim, hidden_dims).to(self.device)
         self.actor_target = Actor(state_dim, action_dim, hidden_dims).to(self.device)
         self.actor_target.load_state_dict(self.actor.state_dict())
         self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=actor_lr)
 
-        # ─── Critic networks ───────────────────────────────────────────────────
         self.critic = Critic(state_dim, action_dim, hidden_dims).to(self.device)
         self.critic_target = Critic(state_dim, action_dim, hidden_dims).to(self.device)
         self.critic_target.load_state_dict(self.critic.state_dict())
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=critic_lr)
 
-        # ─── Replay buffer ─────────────────────────────────────────────────────
         self.replay_buffer = ReplayBuffer(capacity=buffer_size)
         self.batch_size = batch_size
 
-        # ─── Hyperparameters ───────────────────────────────────────────────────
         self.gamma        = gamma
         self.tau          = tau
         self.max_action   = max_action
@@ -174,7 +169,6 @@ class TD3Agent:
         self.noise_clip   = noise_clip * max_action
         self.policy_freq  = policy_freq
 
-        # ─── Internal counters ─────────────────────────────────────────────────
         self.total_steps = 0
 
     def select_action(
@@ -209,7 +203,6 @@ class TD3Agent:
 
         self.total_steps += 1
 
-        # ─── Sample a batch and move to device ─────────────────────────────────
         states, actions, rewards, next_states, dones = self.replay_buffer.sample(self.batch_size)
         states      = states.to(self.device)
         actions     = actions.to(self.device)
@@ -217,7 +210,6 @@ class TD3Agent:
         next_states = next_states.to(self.device)
         dones       = dones.to(self.device)
 
-        # ─── Compute target actions with clipped noise ─────────────────────────
         noise = (
             torch.randn_like(actions) * self.policy_noise
         ).clamp(-self.noise_clip, self.noise_clip)
@@ -225,13 +217,11 @@ class TD3Agent:
             self.actor_target(next_states) * self.max_action + noise
         ).clamp(-self.max_action, self.max_action)
 
-        # ─── Compute target Q-values ──────────────────────────────────────────
         with torch.no_grad():
             q1_target, q2_target = self.critic_target(next_states, next_actions)
             q_target_min = torch.min(q1_target, q2_target)
             target_q = rewards + (1 - dones) * self.gamma * q_target_min
 
-        # ─── Update critic networks (MSE loss) ─────────────────────────────────
         q1_current, q2_current = self.critic(states, actions)
         loss_critic = nn.MSELoss()(q1_current, target_q) + nn.MSELoss()(q2_current, target_q)
 
@@ -239,9 +229,8 @@ class TD3Agent:
         loss_critic.backward()
         self.critic_optimizer.step()
 
-        # ─── Delayed policy update ─────────────────────────────────────────────
         if self.total_steps % self.policy_freq == 0:
-            # 1) Compute actor loss (maximize Q1)
+
             actions_pred = self.actor(states) * self.max_action
             q1_pred, _   = self.critic(states, actions_pred)
             loss_actor   = -q1_pred.mean()
@@ -250,7 +239,6 @@ class TD3Agent:
             loss_actor.backward()
             self.actor_optimizer.step()
 
-            # 2) Soft-update targets
             for param, target_param in zip(self.actor.parameters(), self.actor_target.parameters()):
                 target_param.data.mul_(1 - self.tau)
                 target_param.data.add_(self.tau * param.data)

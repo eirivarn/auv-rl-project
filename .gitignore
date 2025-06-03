@@ -1,1 +1,45 @@
 /.venv
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+/.venv # Added this line
+lib/
+include/
+bin/
+share/
+local/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# IDEs
+.idea/
+.vscode/
+
+# Operating System Files
+.DS_Store
+Thumbs.db
+
+# Project-specific ignored files
+*.log
+*.zip
+*.tar.gz
+*.sqlite3
+*.db
+/models/*.pth # Assuming you want to ignore models, but keep the folder
+/models/*.npy # Assuming you want to ignore models, but keep the folder
+
+# Compiled LaTeX files (if you had any in root for README etc.)
+*.aux
+*.log
+*.nav
+*.out
+*.snm
+*.toc
+*.fls
+*.fdb_latexmk

@@ -5,9 +5,10 @@ import pygame
 import gym
 from gym import spaces
 
-from utils.grid_utils import place_obstacles, move, Lidar, HistoryBuffer
+from environments.grid_env.grid_utils import place_obstacles, move, Lidar
+from utils.shared_utils import HistoryBuffer
 
-from utils.constants import (
+from environments.grid_env.grid_constants import (
     DEFAULT_GRID_SIZE,
     DEFAULT_CELL_SIZE,
     DEFAULT_FPS,
@@ -134,65 +135,3 @@ class GridEnv(gym.Env):
             observation = sensor.process(observation)
 
         return observation, reward, done, {}
-
-
-    def render(self, mode='human') -> None:
-        if not self._initialized:
-            pygame.init()
-            # off-screen surface
-            self.screen = pygame.Surface(self.window_size)
-            # visible window
-            self._window = pygame.display.set_mode(self.window_size)
-            pygame.display.set_caption("GridDockEnv")
-            self.clock = pygame.time.Clock()
-            self._initialized = True
-
-        # draw background
-        self.screen.fill((255,255,255))
-
-        W, H = self.grid_size
-        # grid lines
-        for x in range(W+1):
-            pygame.draw.line(self.screen, (200,200,200),
-                             (x*self.cell_size, 0),
-                             (x*self.cell_size, H*self.cell_size))
-        for y in range(H+1):
-            pygame.draw.line(self.screen, (200,200,200),
-                             (0, y*self.cell_size),
-                             (W*self.cell_size, y*self.cell_size))
-
-        # draw obstacles as black squares
-        for (ox,oy) in self.obstacles:
-            rect = pygame.Rect(
-                ox*self.cell_size,
-                (H-1-oy)*self.cell_size,
-                self.cell_size,
-                self.cell_size
-            )
-            pygame.draw.rect(self.screen, (0,0,0), rect)
-
-        # draw goal (green)
-        gx, gy = self.goal_position
-        goal_rect = pygame.Rect(
-            gx*self.cell_size,
-            (H-1-gy)*self.cell_size,
-            self.cell_size, self.cell_size
-        )
-        pygame.draw.rect(self.screen, (0,200,0), goal_rect)
-
-        # draw agent (blue circle)
-        ax, ay = self.agent_position
-        cx = ax*self.cell_size + self.cell_size//2
-        cy = (H-1-ay)*self.cell_size + self.cell_size//2
-        pygame.draw.circle(self.screen, (0,0,200), (cx,cy), self.cell_size//3)
-
-        # blit & flip
-        self._window.blit(self.screen, (0,0))
-        pygame.display.flip()
-        if mode=='human':
-            self.clock.tick(self._fps)
-
-    def close(self) -> None:
-        if self._initialized:
-            pygame.quit()
-            self._initialized = False

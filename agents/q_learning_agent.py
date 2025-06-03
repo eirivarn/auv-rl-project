@@ -3,15 +3,21 @@ import random
 import pickle
 from tqdm import trange
 
-from utils.constants import (
-    DEFAULT_EPSILON_START,
-    DEFAULT_EPSILON_END,
-    DEFAULT_EPSILON_DECAY,
-    DEFAULT_ALPHA,
-    DEFAULT_GAMMA,
-    DEFAULT_TRAINING_EPISODES,
-    DEFAULT_TRAINING_MAX_STEPS
-)
+########## Q-Learning Constants ##########
+
+# ---- Default Hyperparameters ----
+DEFAULT_ALPHA           = 0.1
+DEFAULT_GAMMA           = 0.99
+DEFAULT_EPSILON_START   = 1.0
+DEFAULT_EPSILON_END     = 0.01
+DEFAULT_EPSILON_DECAY   = 0.995   
+
+# ---- Q-Learning Training ----
+DEFAULT_TRAINING_EPISODES = 10000
+DEFAULT_TRAINING_MAX_STEPS = 100
+DEFAULT_EVALUATION_EPISODES = 100
+DEFAULT_EVALUATION_MAX_STEPS = 100
+
 
 class QLearningAgent:
     def __init__(self, 
@@ -32,7 +38,7 @@ class QLearningAgent:
         dx_size = maximum_values - minimum_values + 1
         dy_size = maximum_values - minimum_values + 1
 
-        # Initialize Q-table with zeros
+        # Initialize Q-table with zeros ### Testing using random values ### 
         self.q_table = np.zeros((dx_size, dy_size, env.action_space.n))
         
         # ---- Hyperparameters ----

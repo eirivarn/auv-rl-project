@@ -3,7 +3,7 @@
 import sys
 import pygame
 import numpy as np
-from environments.static_env import AUVEnv
+from environments.auv_env.auv_env import AUVEnv
 
 def main():
     # Initialize Pygame

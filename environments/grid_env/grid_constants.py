@@ -39,23 +39,3 @@ DIRECTIONS = [
     (1, 0),   # RIGHT
 ]
 
-#---------------------------------------------#
-
-
-########## Q-Learning Constants ##########
-
-# ---- Default Hyperparameters ----
-DEFAULT_ALPHA           = 0.1
-DEFAULT_GAMMA           = 0.99
-DEFAULT_EPSILON_START   = 1.0
-DEFAULT_EPSILON_END     = 0.01
-DEFAULT_EPSILON_DECAY   = 0.995   
-
-# ---- Q-Learning Training ----
-DEFAULT_TRAINING_EPISODES = 10000
-DEFAULT_TRAINING_MAX_STEPS = 100
-DEFAULT_EVALUATION_EPISODES = 100
-DEFAULT_EVALUATION_MAX_STEPS = 100
-
-#---------------------------------------------#
-

@@ -1,7 +1,6 @@
 import numpy as np
 
 ########## AUV Environment Constants ##########
-
 DEFAULT_AUV_GRID_SIZE = (200, 200)
 DEFAULT_RESOLUTION = 0.1
 DEFAULT_DOCKS = 1
@@ -20,7 +19,6 @@ DEFAULT_USE_DISCRETE_ACTIONS = True
 DEFAULT_DT = 0.1
 
 # ---- Rewards, Penalties and Shaping ----
-# Sparse dock reward (event-based, same for both)
 DEFAULT_DISCRETE_DOCK_REWARD    = 500.0
 DEFAULT_CONTINUOUS_DOCK_REWARD  = 10000.0
 

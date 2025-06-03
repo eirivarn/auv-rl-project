@@ -1,7 +1,4 @@
-# environments/grid_env.py
-
 import numpy as np
-import pygame
 import gym
 from gym import spaces
 

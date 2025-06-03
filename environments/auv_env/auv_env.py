@@ -32,18 +32,14 @@ class AUVEnv(gym.Env):
                  **cfg_kwargs):
         super().__init__()
 
-        # Wrap or create config
         self.cfg = cfg or AUVEnvConfig(**cfg_kwargs)
 
-        # Physics toggle
         self.use_physics = self.cfg.use_physics
 
-        # Physics parameters
         self.mass      = self.cfg.mass
         self.drag_coef = self.cfg.drag_coef
         self.dt        = self.cfg.dt
 
-        # Ocean currents
         cur_params = getattr(self.cfg, "current_params", None)
         if cur_params is not None:
             self.current_enabled = True
@@ -54,11 +50,9 @@ class AUVEnv(gym.Env):
         else:
             self.current_enabled = False
 
-        # Map rebuild frequency for random maps
         self.map_reset_freq = getattr(self.cfg, "map_reset_freq", 0)
         self._reset_count   = 0
 
-        # Unpack config values
         self.grid_size       = self.cfg.grid_size
         self.window_size     = self.cfg.window_size
         self.resolution      = self.cfg.resolution
@@ -71,23 +65,19 @@ class AUVEnv(gym.Env):
         self.birth_limit   = self.cfg.birth_limit
         self.death_limit   = self.cfg.death_limit
 
-        # Build or load the occupancy + reflectivity grids
         if self.random_map:
             build_random_maps(self)
         else:
             build_maps(self)
 
-        # Sonar sensor
         params = {**DEFAULT_SONAR_PARAMS, **(self.cfg.sonar_params or {})}
         params.update(n_beams=self.cfg.n_beams, resolution=self.resolution)
         self.sonar = SonarSensor(**params)
 
-        # History buffer (for stacking raw observations)
         self.use_history    = self.cfg.use_history
         self.history_length = self.cfg.history_length
         self.history_buffer = HistoryBuffer(self.history_length + 1)
 
-        # Discrete vs. continuous actions
         self.use_discrete_actions = self.cfg.use_discrete_actions
         if self.use_discrete_actions:
             self.actions = DEFAULT_DISCRETE_ACTIONS.copy()
@@ -98,11 +88,9 @@ class AUVEnv(gym.Env):
             high = np.array([ self.cfg.max_thrust,  self.cfg.max_torque], dtype=np.float32)
             self.action_space = spaces.Box(low, high, dtype=np.float32)
 
-        # Reward thresholds
         self.dock_radius = self.cfg.dock_radius
         self.wall_thresh = self.cfg.wall_thresh
 
-        # Internal state placeholders
         self._last_dist     = None
         self.pose           = None
         self.velocity       = np.zeros(2, dtype=float)
@@ -119,7 +107,6 @@ class AUVEnv(gym.Env):
         self.observation_space = spaces.Box(low=low, high=high, dtype=np.float32)
 
     def reset(self):
-        # Possibly rebuild the map every map_reset_freq resets
         if self.map_reset_freq > 0 and (self._reset_count % self.map_reset_freq == 0):
             if self.random_map:
                 build_random_maps(self)
@@ -127,11 +114,9 @@ class AUVEnv(gym.Env):
                 build_maps(self)
         self._reset_count += 1
 
-        # 1) Reset physics state
         if self.use_physics:
             self.velocity[:] = 0.0
 
-        # 2) Sample dock(s) in free space
         docks_cfg = self.cfg.docks
         if isinstance(docks_cfg, int):
             self.docks = [sample_random_goal(self) for _ in range(docks_cfg)]
@@ -139,7 +124,6 @@ class AUVEnv(gym.Env):
             self.docks = docks_cfg or [sample_random_goal(self)]
         self._visited = [False] * len(self.docks)
 
-        # 3) Spawn the AUV
         x0, y0 = sample_spawn(
             occ_grid=self.occ_grid,
             grid_size=self.grid_size,
@@ -152,17 +136,14 @@ class AUVEnv(gym.Env):
         self.pose[2] = math.atan2(first[1] - y0, first[0] - x0)
         self._last_dist = np.linalg.norm(self.pose[:2] - first)
 
-        # 4) Reset action history
         self.action_history.clear()
         if self.use_discrete_actions:
             for _ in range(self.history_length):
                 self.action_history.append(0.0)
         else:
             for _ in range(self.history_length):
-                # append two zeros (thrust, torque) for continuous
                 self.action_history.extend([0.0, 0.0])
 
-        # 5) Build initial raw observation
         ranges, _, hit_mask = self.sonar.get_readings(
             self.occ_grid, self.refl_grid, self.pose
         )
@@ -255,13 +236,11 @@ class AUVEnv(gym.Env):
             reward += dock_reward
             done = True
 
-        # Step cost
         step_c = (self.cfg.discrete_step_cost
                   if self.use_discrete_actions
                   else self.cfg.continuous_step_cost)
         reward += step_c
 
-        # Wall proximity penalty
         ranges, _, _ = self.sonar.get_readings(self.occ_grid,
                                                self.refl_grid,
                                                self.pose)
@@ -272,7 +251,6 @@ class AUVEnv(gym.Env):
         if min_r < self.wall_thresh:
             reward -= wall_c * (1 - min_r / self.wall_thresh)
 
-        # Progress reward
         d_new = np.linalg.norm(self.pose[:2] - self.docks[0])
         delta = self._last_dist - d_new
         prog_c = (self.cfg.discrete_progress_coeff
@@ -281,7 +259,6 @@ class AUVEnv(gym.Env):
         reward += prog_c * delta
         self._last_dist = d_new
 
-        # Turn penalty
         turn_c = (self.cfg.discrete_turn_penalty_coeff
                   if self.use_discrete_actions
                   else self.cfg.continuous_turn_penalty_coeff)
@@ -328,14 +305,12 @@ class AUVEnv(gym.Env):
 
         surf.fill((0, 0, 50))
 
-        # Draw occupancy grid
         cw = map_w / self.grid_size[1]
         ch = total_h / self.grid_size[0]
         for y, x in zip(*np.where(self.occ_grid)):
             pygame.draw.rect(surf, (100, 100, 100),
                              (x * cw, y * ch, cw, ch))
 
-        # Draw docks
         for idx, dock in enumerate(self.docks):
             gx = dock[0] / self.resolution * cw
             gy = dock[1] / self.resolution * ch
@@ -344,7 +319,6 @@ class AUVEnv(gym.Env):
                                (int(gx), int(gy)),
                                int(self.dock_radius / self.resolution * cw), 2)
 
-        # Draw AUV
         x_pix = self.pose[0] / self.resolution * cw
         y_pix = self.pose[1] / self.resolution * ch
         pygame.draw.circle(surf, (0, 255, 0),
@@ -357,7 +331,6 @@ class AUVEnv(gym.Env):
                          (int(x_pix), int(y_pix)),
                          (int(ex), int(ey)), 2)
 
-        # Draw sonar panel
         ranges, _, hit_mask = self.sonar.get_readings(self.occ_grid,
                                                       self.refl_grid,
                                                       self.pose)
@@ -372,7 +345,6 @@ class AUVEnv(gym.Env):
             radius = 5 if hit else 2
             pygame.draw.circle(surf, color, (int(px), int(py)), radius)
 
-        # Draw sonar‐space top‐down
         cx0 = map_w + panel_w
         cw2 = panel_w
         ch2 = total_h

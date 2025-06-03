@@ -1,5 +1,4 @@
 from enum import IntEnum
-import pygame
 
 ########## Grid Environment Constants ##########
 

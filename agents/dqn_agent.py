@@ -2,7 +2,6 @@ import random
 import pickle
 from collections import deque
 from typing import Optional
-
 import numpy as np
 import torch
 import torch.nn as nn

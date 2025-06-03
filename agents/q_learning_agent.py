@@ -17,7 +17,7 @@ DEFAULT_TRAINING_EPISODES = 10000
 DEFAULT_TRAINING_MAX_STEPS = 100
 DEFAULT_EVALUATION_EPISODES = 100
 DEFAULT_EVALUATION_MAX_STEPS = 100
-
+#-----------------------------------------#
 
 class QLearningAgent:
     def __init__(self, 

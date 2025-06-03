@@ -5,10 +5,6 @@ import pygame
 
 
 class SonarSensor:
-    """
-    Simulates a forward-mounted fan-beam sonar sensor with optional intensity,
-    debris, and ghost echoes, ignoring beams that exit the map.
-    """
     def __init__(self,
                  fov=np.deg2rad(360), n_beams=20,
                  max_range=20.0, resolution=0.05,
@@ -88,8 +84,11 @@ def build_maps(self):
     H,W = self.grid_size
     self.occ_grid = np.zeros((H,W),dtype=np.uint8)
     self.refl_grid = np.full((H,W),0.2)
-    rectangles = [(40,40,10,60),
-    (100,0,20,80),(150,120,50,10),(0,100,60,20),(80,150,10,40)]
+    rectangles = [(40,40,10,60), 
+                  (100,0,20,80),
+                  (150,120,50,10),
+                  (0,100,60,20),
+                  (80,150,10,40)]
     for cx,cy,w,h in rectangles:
         self.occ_grid[cy:cy+h,cx:cx+w] = 1
         self.refl_grid[cy:cy+h,cx:cx+w] = np.random.uniform(0.5,1.0,size=(h,w))
@@ -198,7 +197,6 @@ def get_raw_observation(self):
     ], axis=0)
 
 def get_observation(self):
-    # Return either the latest raw obs or the full history stack
     if self.use_history:
         return np.concatenate(self.history_buffer, axis=0)
     else:

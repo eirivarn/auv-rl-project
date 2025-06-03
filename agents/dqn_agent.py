@@ -1,116 +1,109 @@
 import random
-import numpy as np
+import pickle
 from collections import deque
+from typing import Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from tqdm import tqdm
+from tqdm import trange
+
+# ─── Default DQN Hyperparameters ────────────────────────────────────────────────
+DEFAULT_HIDDEN_DIMS     = [64, 64]
+DEFAULT_LR              = 1e-3
+DEFAULT_GAMMA           = 0.99
+DEFAULT_EPSILON_START   = 1.0
+DEFAULT_EPSILON_END     = 0.01
+DEFAULT_EPSILON_DECAY   = 0.995
+DEFAULT_BATCH_SIZE      = 64
+DEFAULT_BUFFER_SIZE     = 10_000
+DEFAULT_TARGET_UPDATE   = 10
+DEFAULT_TRAIN_EPISODES  = 1000
+DEFAULT_TRAIN_MAX_STEPS = 100
+# ────────────────────────────────────────────────────────────────────────────────
+
 
 class DQNNetwork(nn.Module):
-    def __init__(self, input_dim, hidden_dims, output_dim):
+    def __init__(self, input_dim: int, hidden_dims: list[int], output_dim: int):
         super().__init__()
-        layers = []
+        layers: list[nn.Module] = []
         dims = [input_dim] + hidden_dims
+
         for i in range(len(hidden_dims)):
-            layers += [
-                nn.Linear(dims[i], dims[i+1]),
-                nn.ReLU()
-            ]
+            layers.append(nn.Linear(dims[i], dims[i + 1]))
+            layers.append(nn.ReLU())
+
         layers.append(nn.Linear(dims[-1], output_dim))
         self.net = nn.Sequential(*layers)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.net(x)
 
 class DQNAgent:
-    def __init__(self,
-                 env,
-                 hidden_dims=[64,64],
-                 lr=1e-3,
-                 gamma=0.99,
-                 epsilon_start=1.0,
-                 epsilon_min=0.01,
-                 epsilon_decay=0.995,
-                 batch_size=64,
-                 buffer_size=10_000,
-                 target_update=10,
-                 # ── LiDAR flags ───────────────────────────
-                 use_lidar: bool = False,
-                 lidar_range: int = 10,
-                 # ── history flags ───────────────────────
-                 use_history: bool = False,
-                 history_length: int = 3,
-                 device=None):
-        """
-        env: your GridDockEnv
-        use_lidar: if True, env._get_obs() returns [dx,dy,d_up,d_dn,d_lt,d_rt]
-        lidar_range: maximum scan distance (for env & for reference)
-        rest: unchanged from your original agent
-        """
+    def __init__(
+        self,
+        env,
+        hidden_dims: list[int]      = DEFAULT_HIDDEN_DIMS,
+        lr: float                   = DEFAULT_LR,
+        gamma: float                = DEFAULT_GAMMA,
+        epsilon_start: float        = DEFAULT_EPSILON_START,
+        epsilon_min: float          = DEFAULT_EPSILON_END,
+        epsilon_decay: float        = DEFAULT_EPSILON_DECAY,
+        batch_size: int             = DEFAULT_BATCH_SIZE,
+        buffer_size: int            = DEFAULT_BUFFER_SIZE,
+        target_update: int          = DEFAULT_TARGET_UPDATE,
+        device: Optional[str]       = None,
+    ):
         self.env = env
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
-        # ---- store LiDAR settings ----
-        self.use_lidar   = use_lidar
-        self.lidar_range = lidar_range
-
-        # ---- store history settings ----
-        self.use_history    = use_history
-        self.history_length = history_length
-        
-        # ---- Dynamic input size ----
-        reset_output = env.reset()
-        if isinstance(reset_output, tuple):
-            sample_obs, _ = reset_output
+        # ─── Network dimensions dynamically from env.reset() ─────────────────────
+        reset_out = env.reset()
+        if isinstance(reset_out, tuple):
+            sample_obs, _ = reset_out
         else:
-            sample_obs = reset_output
-        self.input_dim = int(sample_obs.shape[0])
+            sample_obs = reset_out
+        self.input_dim  = int(sample_obs.shape[0])
         self.output_dim = env.action_space.n
 
-        self.output_dim = env.action_space.n
-
-        # ---- build policy & target nets ----
+        # ─── Build policy & target networks ─────────────────────────────────────
         self.policy_net = DQNNetwork(self.input_dim, hidden_dims, self.output_dim).to(self.device)
         self.target_net = DQNNetwork(self.input_dim, hidden_dims, self.output_dim).to(self.device)
         self.target_net.load_state_dict(self.policy_net.state_dict())
         self.target_net.eval()
 
-        # ---- optimizer, loss, discount ----
+        # ─── Optimizer & loss ─────────────────────────────────────────────────────
         self.optimizer = optim.Adam(self.policy_net.parameters(), lr=lr)
         self.criterion = nn.MSELoss()
-        self.gamma     = gamma
+        self.gamma = gamma
 
-        # ---- ε-greedy ----
+        # ─── ε-greedy parameters ─────────────────────────────────────────────────
         self.epsilon       = epsilon_start
         self.epsilon_min   = epsilon_min
         self.epsilon_decay = epsilon_decay
 
-        # ---- replay buffer ----
+        # ─── Replay buffer ────────────────────────────────────────────────────────
         self.memory     = deque(maxlen=buffer_size)
         self.batch_size = batch_size
 
-        # ---- bookkeeping ----
+        # ─── Target-update frequency & counters ──────────────────────────────────
         self.target_update = target_update
         self.step_counter  = 0
 
-    def select_action(self, state):
-        exploration_prob = random.random()
-        if exploration_prob < self.epsilon:
-            action = self.env.action_space.sample()
-            return action
-        else:
-            state_tensor = torch.tensor(
-                state, 
-                dtype=torch.float32, 
-                device=self.device
-                ).unsqueeze(0) # unsqueeze to get shape (1, input_dim)
-            with torch.no_grad():
-                q_values = self.policy_net(state_tensor)
-                action = q_values.max(1)[1].item()
-            return action
-            
-    def store_transition(self, s, a, r, s_next, done):
+        # ─── Tracking rewards per episode ────────────────────────────────────────
+        self.rewards_history: list[float] = []
+
+    def select_action(self, state: np.ndarray) -> int:
+        if random.random() < self.epsilon:
+            return self.env.action_space.sample()
+        state_tensor = torch.tensor(state, dtype=torch.float32, device=self.device).unsqueeze(0)
+        with torch.no_grad():
+            q_values = self.policy_net(state_tensor)
+            action = q_values.max(1)[1].item()
+        return action
+
+    def store_transition(self, s, a, r, s_next, done) -> None:
         self.memory.append((s, a, r, s_next, done))
 
     def sample_batch(self):
@@ -131,7 +124,7 @@ class DQNAgent:
 
         return states_tensor, actions_tensor, rewards_tensor, next_states_tensor, dones_tensor
 
-    def optimize_model(self):
+    def optimize_model(self) -> None:
         if len(self.memory) < self.batch_size:
             return
 
@@ -148,51 +141,86 @@ class DQNAgent:
         loss.backward()
         self.optimizer.step()
 
-    def update_epsilon(self):
+    def update_epsilon(self) -> None:
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
 
-    def maybe_update_target(self):
+    def maybe_update_target(self) -> None:
         if self.step_counter % self.target_update == 0:
             self.target_net.load_state_dict(self.policy_net.state_dict())
 
-
     def save(self, filepath: str) -> None:
-        torch.save(self.policy_net.state_dict(), filepath)
+        with open(filepath, "wb") as f:
+            pickle.dump({
+                "policy_state_dict": self.policy_net.state_dict(),
+                "epsilon": self.epsilon,
+            }, f)
 
     def load(self, filepath: str) -> None:
-        state_dict = torch.load(filepath, map_location=self.device)
-        self.policy_net.load_state_dict(state_dict)
-        self.target_net.load_state_dict(state_dict)
+        with open(filepath, "rb") as f:
+            ckpt = pickle.load(f)
+        self.policy_net.load_state_dict(ckpt["policy_state_dict"])
+        self.target_net.load_state_dict(ckpt["policy_state_dict"])
+        self.epsilon = ckpt.get("epsilon", self.epsilon)
 
-def train_dqn(env, agent, episodes=1000, max_steps=100):
-    rewards_hist = []
+    def train(self,
+              episodes: int = DEFAULT_TRAIN_EPISODES,
+              max_steps: int = DEFAULT_TRAIN_MAX_STEPS) -> list[float]:
+        
+        episode_returns: list[float] = []
+        for ep in trange(episodes, desc="DQN Training"):
+            reset_out = self.env.reset()
+            if isinstance(reset_out, tuple):
+                state, _ = reset_out
+            else:
+                state = reset_out
 
-    pbar = tqdm(range(episodes), desc="DQN Training")
-    for ep in pbar:
-        state, _ = env.reset()
-        total_reward = 0
+            total_reward = 0.0
+            for t in range(max_steps):
+                action = self.select_action(state)
+                next_state, reward, done, _ = self.env.step(action)
 
-        for t in range(max_steps):
-            action = agent.select_action(state)
-            next_s, reward, done, _ = env.step(action)
+                self.store_transition(state, action, reward, next_state, done)
+                self.optimize_model()
 
-            agent.store_transition(state, action, reward, next_s, done)
-            agent.optimize_model()
+                state = next_state
+                total_reward += reward
 
-            state = next_s
-            total_reward += reward
-            agent.step_counter += 1
-            agent.maybe_update_target()
+                self.step_counter += 1
+                self.maybe_update_target()
 
-            if done:
-                break
+                if done:
+                    break
 
-        agent.update_epsilon()
-        rewards_hist.append(total_reward)
+            self.update_epsilon()
+            episode_returns.append(total_reward)
 
-        pbar.set_postfix({
-            "Reward": f"{total_reward:.1f}",
-            "ε":      f"{agent.epsilon:.3f}"
-        })
+        self.rewards_history = episode_returns
+        return episode_returns
 
-    return rewards_hist
+    def evaluate(self,
+                 episodes: int = 100,
+                 max_steps: int = 100,
+                 render: bool = False) -> float:
+        successes = 0
+        for ep in range(episodes):
+            obs_out = self.env.reset()
+            if isinstance(obs_out, tuple):
+                obs, _ = obs_out
+            else:
+                obs = obs_out
+
+            for t in range(max_steps):
+                state_tensor = torch.tensor(obs, dtype=torch.float32, device=self.device).unsqueeze(0)
+                action = self.policy_net(state_tensor).argmax(dim=1).item()
+
+                next_obs, reward, done, _ = self.env.step(action)
+                obs = next_obs
+
+                if render:
+                    self.env.render()
+
+                if done:
+                    successes += 1
+                    break
+
+        return successes / episodes
